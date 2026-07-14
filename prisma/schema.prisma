@@ -1,0 +1,459 @@
+generator client {
+  provider = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  OPERATIONS_MANAGER
+  REMOTE_PILOT
+  MAINTENANCE_COORDINATOR
+  SAFETY_OFFICER
+  COMPLIANCE_OFFICER
+  SYSTEM_ADMINISTRATOR
+}
+
+enum DroneStatus {
+  AVAILABLE
+  IN_MISSION
+  MAINTENANCE
+  GROUNDED
+  DISCONNECTED
+  AWAITING_APPROVAL
+}
+
+enum CertificationStatus {
+  CERTIFIED
+  AWAITING_APPROVAL
+  AWAITING_RENEWAL
+  EXPIRED
+  GROUNDED_PENDING_INSPECTION
+}
+
+enum TelemetryProvider {
+  NONE
+  GENERIC_REST
+  DJI
+  AUTEL
+  MAVLINK
+}
+
+enum ConnectorStatus {
+  NOT_CONFIGURED
+  CONFIGURED
+  ONLINE
+  DEGRADED
+  OFFLINE
+}
+
+enum MissionStatus {
+  PLANNED
+  APPROVED
+  ACTIVE
+  COMPLETED
+  ABORTED
+  CANCELLED
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum MaintenanceStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  OVERDUE
+  CANCELLED
+}
+
+enum TriggerType {
+  HOURS
+  CALENDAR
+  EVENT
+}
+
+enum Severity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum IncidentStatus {
+  OPEN
+  UNDER_REVIEW
+  INVESTIGATION
+  CORRECTIVE_ACTION
+  CLOSED
+}
+
+enum IncidentType {
+  LOSS_OF_SIGNAL
+  GEOFENCE_BREACH
+  LOW_BATTERY
+  COLLISION
+  EMERGENCY_LANDING
+  EQUIPMENT_FAILURE
+  WEATHER_EVENT
+}
+
+enum GeofenceType {
+  RESTRICTED
+  WARNING
+  ADVISORY
+}
+
+enum DocumentEntityType {
+  DRONE
+  MISSION
+  INCIDENT
+  MAINTENANCE
+  DEFECT
+  REPORT
+  USER
+}
+
+enum ReportType {
+  FLIGHT_ACTIVITY
+  INCIDENT
+  MAINTENANCE
+  COMPLIANCE
+  UTILIZATION
+}
+
+model Organisation {
+  id        String   @id @default(uuid())
+  name      String
+  industry  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users       User[]
+  drones      Drone[]
+  missions    Mission[]
+  incidents   Incident[]
+  geofences   Geofence[]
+  documents   Document[]
+  reports     Report[]
+  auditLogs   AuditLog[]
+  alertSettings AlertSettings?
+}
+
+model AlertSettings {
+  id                    String   @id @default(uuid())
+  organisationId        String   @unique
+  minimumLandingBattery Int      @default(20)
+  maximumWindSpeed      Int      @default(34)
+  lowSignalWarning      Int      @default(70)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+}
+
+model User {
+  id               String    @id @default(uuid())
+  organisationId   String
+  name             String
+  email            String    @unique
+  passwordHash     String
+  role             UserRole
+  profileImageUrl  String?
+  isVerified       Boolean   @default(false)
+  verificationToken String?
+  pendingEmail      String?
+  emailChangeToken  String?
+  resetToken       String?
+  passwordResetRequestedAt DateTime?
+  refreshTokenHash String?
+  lastLoginAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  pilotMissions Mission[] @relation("MissionPilot")
+  reportedIncidents Incident[] @relation("IncidentReporter")
+  assignedIncidents Incident[] @relation("IncidentAssignee")
+  maintenanceRecords MaintenanceRecord[] @relation("MaintenanceAssignee")
+  defects Defect[] @relation("DefectReporter")
+  reports Report[]
+  auditLogs AuditLog[]
+
+  @@index([organisationId, role])
+}
+
+model Drone {
+  id                  String              @id @default(uuid())
+  organisationId      String
+  droneCode           String
+  model               String
+  manufacturer        String?
+  serialNumber        String              @unique
+  batteryType         String?
+  firmwareVersion     String?
+  status              DroneStatus         @default(AVAILABLE)
+  flightHours         Float               @default(0)
+  purchaseDate        DateTime?
+  certificationStatus CertificationStatus @default(AWAITING_APPROVAL)
+  telemetryProvider  TelemetryProvider    @default(NONE)
+  externalDeviceId   String?
+  connectorConfig    Json?
+  connectorStatus    ConnectorStatus      @default(NOT_CONFIGURED)
+  lastTelemetryAt    DateTime?
+  nextMaintenanceDate DateTime?
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  missions Mission[]
+  flightLogs FlightLog[]
+  telemetryLogs TelemetryLog[]
+  maintenanceRecords MaintenanceRecord[]
+  defects Defect[]
+  incidents Incident[]
+
+  @@unique([organisationId, droneCode])
+  @@index([organisationId, status])
+  @@index([organisationId, telemetryProvider, connectorStatus])
+}
+
+model Mission {
+  id              String        @id @default(uuid())
+  organisationId  String
+  missionCode     String
+  name            String
+  type            String
+  status          MissionStatus @default(PLANNED)
+  droneId         String?
+  pilotId         String?
+  plannedRoute    Json?
+  geofenceConfig  Json?
+  launchSite      String?
+  operatingArea   String?
+  plannedStartAt  DateTime?
+  plannedEndAt    DateTime?
+  progress        Int           @default(0)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  drone Drone? @relation(fields: [droneId], references: [id])
+  pilot User? @relation("MissionPilot", fields: [pilotId], references: [id])
+  flightLogs FlightLog[]
+  telemetryLogs TelemetryLog[]
+  incidents Incident[]
+  riskAssessment RiskAssessment?
+
+  @@unique([organisationId, missionCode])
+  @@index([organisationId, status])
+  @@index([droneId, pilotId])
+}
+
+model FlightLog {
+  id              String   @id @default(uuid())
+  organisationId  String
+  flightCode      String
+  pilotId         String
+  droneId         String
+  missionId       String?
+  durationMinutes Int
+  flightDate      DateTime
+  location        String
+  weather         String?
+  notes           String?
+  evidence        Json?
+  createdAt       DateTime @default(now())
+
+  drone Drone @relation(fields: [droneId], references: [id])
+  mission Mission? @relation(fields: [missionId], references: [id])
+
+  @@unique([organisationId, flightCode])
+  @@index([droneId, flightDate])
+}
+
+model RiskAssessment {
+  id              String    @id @default(uuid())
+  organisationId  String
+  missionId       String    @unique
+  level           RiskLevel
+  hazards         Json
+  mitigations     Json
+  approvedById    String?
+  approvedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  mission Mission @relation(fields: [missionId], references: [id], onDelete: Cascade)
+}
+
+model MaintenanceRecord {
+  id              String            @id @default(uuid())
+  organisationId  String
+  droneId         String
+  assignedToId    String?
+  type            String
+  status          MaintenanceStatus @default(SCHEDULED)
+  triggerType     TriggerType
+  dueAt           DateTime?
+  completedAt     DateTime?
+  notes           String?
+  correctiveAction String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  drone Drone @relation(fields: [droneId], references: [id])
+  assignedTo User? @relation("MaintenanceAssignee", fields: [assignedToId], references: [id])
+
+  @@index([organisationId, status])
+  @@index([droneId])
+}
+
+model Defect {
+  id              String   @id @default(uuid())
+  organisationId  String
+  droneId         String
+  reportedById    String?
+  title           String
+  severity        Severity
+  status          String   @default("OPEN")
+  evidence        Json?
+  correctiveAction String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  drone Drone @relation(fields: [droneId], references: [id])
+  reportedBy User? @relation("DefectReporter", fields: [reportedById], references: [id])
+
+  @@index([organisationId, severity, status])
+}
+
+model Incident {
+  id              String         @id @default(uuid())
+  organisationId  String
+  incidentCode    String
+  type            IncidentType
+  title           String
+  severity        Severity
+  status          IncidentStatus @default(OPEN)
+  droneId         String
+  missionId       String?
+  reportedById    String
+  assignedToId    String?
+  location        String?
+  source          String?
+  details         String?
+  rootCause       String?
+  correctiveAction String?
+  timeline        Json?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  drone Drone @relation(fields: [droneId], references: [id])
+  mission Mission? @relation(fields: [missionId], references: [id])
+  reportedBy User @relation("IncidentReporter", fields: [reportedById], references: [id])
+  assignedTo User? @relation("IncidentAssignee", fields: [assignedToId], references: [id])
+
+  @@unique([organisationId, incidentCode])
+  @@index([organisationId, status, severity])
+}
+
+model TelemetryLog {
+  id              String   @id @default(uuid())
+  organisationId  String
+  droneId         String
+  missionId       String?
+  timestamp       DateTime
+  latitude        Float
+  longitude       Float
+  altitude        Float
+  speed           Float
+  heading         Float
+  batteryLevel    Int
+  batteryVoltage  Float?
+  signalStrength  Int
+  linkQuality     String
+  status          String
+  rawPayload      Json
+  createdAt       DateTime @default(now())
+
+  drone Drone @relation(fields: [droneId], references: [id])
+  mission Mission? @relation(fields: [missionId], references: [id])
+
+  @@index([droneId, timestamp])
+  @@index([missionId, timestamp])
+}
+
+model Geofence {
+  id              String       @id @default(uuid())
+  organisationId  String
+  name            String
+  type            GeofenceType
+  polygon         Json
+  isActive        Boolean      @default(true)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+
+  @@index([organisationId, type, isActive])
+}
+
+model Document {
+  id              String             @id @default(uuid())
+  organisationId  String
+  entityType      DocumentEntityType
+  entityId        String
+  category        String
+  title           String
+  fileUrl         String
+  version         Int                @default(1)
+  metadata        Json?
+  uploadedById    String?
+  createdAt       DateTime           @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+
+  @@index([organisationId, entityType, entityId])
+}
+
+model Report {
+  id              String     @id @default(uuid())
+  organisationId  String
+  generatedById   String?
+  type            ReportType
+  title           String
+  dataSnapshot    Json
+  fileUrl         String?
+  createdAt       DateTime   @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  generatedBy User? @relation(fields: [generatedById], references: [id])
+
+  @@index([organisationId, type, createdAt])
+}
+
+model AuditLog {
+  id              String   @id @default(uuid())
+  organisationId  String
+  actorId         String?
+  action          String
+  entityType      String
+  entityId        String
+  metadata        Json?
+  createdAt       DateTime @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  actor User? @relation(fields: [actorId], references: [id])
+
+  @@index([organisationId, entityType, entityId])
+  @@index([organisationId, createdAt])
+}
