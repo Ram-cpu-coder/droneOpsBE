@@ -12,11 +12,12 @@ export const listDrones = (organisationId) => {
 
 export const createDrone = async (organisationId, data) => {
   const telemetryProvider = resolveTelemetryProvider(data);
+  const droneCode = data.droneCode || await generateDroneCode(organisationId);
 
   return prisma.drone.create({
     data: {
       organisationId,
-      droneCode: data.droneCode,
+      droneCode,
       model: data.model,
       manufacturer: data.manufacturer,
       serialNumber: data.serialNumber,
@@ -25,7 +26,13 @@ export const createDrone = async (organisationId, data) => {
       status: data.status,
       flightHours: data.flightHours,
       purchaseDate: data.purchaseDate ? new Date(data.purchaseDate) : undefined,
+      lastMaintenanceDate: data.lastMaintenanceDate ? new Date(data.lastMaintenanceDate) : undefined,
+      nextMaintenanceDate: data.nextMaintenanceDate ? new Date(data.nextMaintenanceDate) : undefined,
+      inspectionThresholdHours: data.inspectionThresholdHours,
       certificationStatus: data.certificationStatus,
+      certificationReference: data.certificationReference,
+      certificationExpiry: data.certificationExpiry ? new Date(data.certificationExpiry) : undefined,
+      remoteId: data.remoteId,
       telemetryProvider,
       externalDeviceId: data.externalDeviceId,
       connectorConfig: data.connectorConfig,
@@ -83,4 +90,23 @@ const resolveTelemetryProvider = (data) => {
   if (manufacturer.includes("px4") || manufacturer.includes("ardupilot") || manufacturer.includes("mavlink")) return "MAVLINK";
 
   return "NONE";
+};
+
+const generateDroneCode = async (organisationId) => {
+  const count = await prisma.drone.count({ where: { organisationId } });
+
+  for (let index = count + 1; index < count + 1000; index += 1) {
+    const candidate = `DRN-${String(index).padStart(3, "0")}`;
+    const existing = await prisma.drone.findFirst({
+      where: {
+        organisationId,
+        droneCode: candidate
+      },
+      select: { id: true }
+    });
+
+    if (!existing) return candidate;
+  }
+
+  return `DRN-${Date.now().toString().slice(-6)}`;
 };

@@ -145,6 +145,7 @@ model Organisation {
   reports     Report[]
   auditLogs   AuditLog[]
   alertSettings AlertSettings?
+  notificationReads NotificationRead[]
 }
 
 model AlertSettings {
@@ -186,6 +187,7 @@ model User {
   defects Defect[] @relation("DefectReporter")
   reports Report[]
   auditLogs AuditLog[]
+  notificationReads NotificationRead[]
 
   @@index([organisationId, role])
 }
@@ -202,7 +204,12 @@ model Drone {
   status              DroneStatus         @default(AVAILABLE)
   flightHours         Float               @default(0)
   purchaseDate        DateTime?
+  lastMaintenanceDate DateTime?
   certificationStatus CertificationStatus @default(AWAITING_APPROVAL)
+  certificationReference String?
+  certificationExpiry DateTime?
+  remoteId            String?
+  inspectionThresholdHours Int?
   telemetryProvider  TelemetryProvider    @default(NONE)
   externalDeviceId   String?
   connectorConfig    Json?
@@ -453,7 +460,24 @@ model AuditLog {
 
   organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
   actor User? @relation(fields: [actorId], references: [id])
+  notificationReads NotificationRead[]
 
   @@index([organisationId, entityType, entityId])
   @@index([organisationId, createdAt])
+}
+
+model NotificationRead {
+  id             String   @id @default(uuid())
+  organisationId String
+  userId         String
+  auditLogId     String
+  readAt         DateTime @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  auditLog AuditLog @relation(fields: [auditLogId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, auditLogId])
+  @@index([organisationId, userId, readAt])
+  @@index([auditLogId])
 }
