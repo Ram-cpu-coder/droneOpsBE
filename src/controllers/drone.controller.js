@@ -1,4 +1,10 @@
 import { writeAudit } from "../services/audit.service.js";
+import {
+  createDroneModel,
+  listDroneModelCatalog,
+  removeDroneModel,
+  updateDroneModel
+} from "../services/droneCatalog.service.js";
 import * as droneService from "../services/drone.service.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { created, noContent, ok } from "../utils/apiResponse.js";
@@ -6,6 +12,26 @@ import { created, noContent, ok } from "../utils/apiResponse.js";
 export const list = asyncHandler(async (req, res) => {
   const drones = await droneService.listDrones(req.user.organisationId);
   return ok(res, drones);
+});
+
+export const catalog = asyncHandler(async (req, res) => {
+  const includeInactive = req.query.includeInactive === "true" && req.user.role === "SYSTEM_ADMINISTRATOR";
+  return ok(res, await listDroneModelCatalog({ includeInactive }));
+});
+
+export const createCatalogModel = asyncHandler(async (req, res) => {
+  const model = await createDroneModel(req.validated.body);
+  return created(res, model, "Drone model added");
+});
+
+export const updateCatalogModel = asyncHandler(async (req, res) => {
+  const model = await updateDroneModel(req.params.id, req.validated.body);
+  return ok(res, model, "Drone model updated");
+});
+
+export const removeCatalogModel = asyncHandler(async (req, res) => {
+  await removeDroneModel(req.params.id);
+  return noContent(res);
 });
 
 export const create = asyncHandler(async (req, res) => {

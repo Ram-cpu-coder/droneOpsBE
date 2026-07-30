@@ -129,6 +129,11 @@ enum ReportType {
   UTILIZATION
 }
 
+enum ReportStatus {
+  REVIEW
+  READY
+}
+
 model Organisation {
   id        String   @id @default(uuid())
   name      String
@@ -230,6 +235,23 @@ model Drone {
   @@unique([organisationId, droneCode])
   @@index([organisationId, status])
   @@index([organisationId, telemetryProvider, connectorStatus])
+}
+
+model DroneModelCatalog {
+  id                String            @id @default(uuid())
+  manufacturer      String
+  model             String
+  batteryType       String
+  telemetryProvider TelemetryProvider @default(NONE)
+  category          String?
+  sourceUrl         String?
+  isActive          Boolean           @default(true)
+  lastVerifiedAt    DateTime?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  @@unique([manufacturer, model])
+  @@index([manufacturer, isActive])
 }
 
 model Mission {
@@ -438,6 +460,7 @@ model Report {
   generatedById   String?
   type            ReportType
   title           String
+  status          ReportStatus @default(REVIEW)
   dataSnapshot    Json
   fileUrl         String?
   createdAt       DateTime   @default(now())
@@ -446,6 +469,7 @@ model Report {
   generatedBy User? @relation(fields: [generatedById], references: [id])
 
   @@index([organisationId, type, createdAt])
+  @@index([organisationId, status])
 }
 
 model AuditLog {

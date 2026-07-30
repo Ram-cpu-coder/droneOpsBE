@@ -1,5 +1,6 @@
 import { prisma } from "../config/prisma.js";
 import { AppError } from "../utils/AppError.js";
+import { findDroneModel } from "./droneCatalog.service.js";
 
 const assignableStatuses = ["AVAILABLE"];
 
@@ -11,17 +12,24 @@ export const listDrones = (organisationId) => {
 };
 
 export const createDrone = async (organisationId, data) => {
-  const telemetryProvider = resolveTelemetryProvider(data);
+  const catalogModel = await findDroneModel(data.manufacturer, data.model);
+  if (!catalogModel) {
+    throw new AppError("Select a supported manufacturer and model from the DroneOps catalog", 400, "UNSUPPORTED_DRONE_MODEL");
+  }
+
+  const telemetryProvider = data.telemetryProvider && data.telemetryProvider !== "NONE"
+    ? data.telemetryProvider
+    : catalogModel.telemetryProvider;
   const droneCode = data.droneCode || await generateDroneCode(organisationId);
 
   return prisma.drone.create({
     data: {
       organisationId,
       droneCode,
-      model: data.model,
-      manufacturer: data.manufacturer,
+      model: catalogModel.model,
+      manufacturer: catalogModel.manufacturer,
       serialNumber: data.serialNumber,
-      batteryType: data.batteryType,
+      batteryType: catalogModel.batteryType,
       firmwareVersion: data.firmwareVersion,
       status: data.status,
       flightHours: data.flightHours,
@@ -43,7 +51,27 @@ export const createDrone = async (organisationId, data) => {
 
 export const updateDrone = async (organisationId, id, data) => {
   await ensureDroneExists(organisationId, id);
-  return prisma.drone.update({ where: { id }, data });
+  const updateData = { ...data };
+
+  if (data.manufacturer || data.model) {
+    const currentDrone = await ensureDroneExists(organisationId, id);
+    const manufacturer = data.manufacturer ?? currentDrone.manufacturer;
+    const model = data.model ?? currentDrone.model;
+    const catalogModel = await findDroneModel(manufacturer, model);
+
+    if (!catalogModel) {
+      throw new AppError("Select a supported manufacturer and model from the DroneOps catalog", 400, "UNSUPPORTED_DRONE_MODEL");
+    }
+
+    updateData.manufacturer = catalogModel.manufacturer;
+    updateData.model = catalogModel.model;
+    updateData.batteryType = catalogModel.batteryType;
+    if (!data.telemetryProvider || data.telemetryProvider === "NONE") {
+      updateData.telemetryProvider = catalogModel.telemetryProvider;
+    }
+  }
+
+  return prisma.drone.update({ where: { id }, data: updateData });
 };
 
 export const deleteDrone = async (organisationId, id) => {

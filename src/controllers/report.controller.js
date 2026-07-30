@@ -1,5 +1,6 @@
 import { prisma } from "../config/prisma.js";
 import { writeAudit } from "../services/audit.service.js";
+import { AppError } from "../utils/AppError.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { created, ok } from "../utils/apiResponse.js";
 
@@ -25,7 +26,8 @@ export const create = asyncHandler(async (req, res) => {
     data: {
       organisationId: req.user.organisationId,
       generatedById: req.user.id,
-      ...req.body
+      ...req.body,
+      status: req.body.status === "READY" ? "READY" : "REVIEW"
     }
   });
   await writeAudit({
@@ -190,6 +192,7 @@ export const generate = asyncHandler(async (req, res) => {
       generatedById: req.user.id,
       type: requestedType,
       title,
+      status: "READY",
       dataSnapshot: snapshot
     },
     include: {
@@ -216,6 +219,49 @@ export const generate = asyncHandler(async (req, res) => {
   });
 
   return created(res, report, "Report generated from live organisation data");
+});
+
+export const updateStatus = asyncHandler(async (req, res) => {
+  const status = String(req.body?.status ?? "").toUpperCase();
+  const report = await prisma.report.findFirst({
+    where: {
+      id: req.params.id,
+      organisationId: req.user.organisationId
+    }
+  });
+
+  if (!report) {
+    throw new AppError("Report not found", 404, "REPORT_NOT_FOUND");
+  }
+
+  const updatedReport = await prisma.report.update({
+    where: { id: report.id },
+    data: { status },
+    include: {
+      generatedBy: {
+        select: {
+          id: true,
+          name: true,
+          email: true
+        }
+      }
+    }
+  });
+
+  await writeAudit({
+    organisationId: req.user.organisationId,
+    actorId: req.user.id,
+    action: "REPORT_STATUS_UPDATED",
+    entityType: "REPORT",
+    entityId: updatedReport.id,
+    metadata: {
+      title: updatedReport.title,
+      type: updatedReport.type,
+      status: updatedReport.status
+    }
+  });
+
+  return ok(res, updatedReport, "Report status updated");
 });
 
 export const remove = asyncHandler(async (req, res) => {

@@ -6,6 +6,21 @@ export const idParamSchema = z.object({
   query: z.object({}).optional()
 });
 
+export const droneCatalogModelSchema = z.object({
+  body: z.object({
+    manufacturer: z.string().min(2),
+    model: z.string().min(2),
+    batteryType: z.string().min(2),
+    telemetryProvider: z.enum(["NONE", "DJI", "AUTEL", "MAVLINK"]).default("NONE"),
+    category: z.string().min(2).optional(),
+    sourceUrl: z.string().url().optional(),
+    isActive: z.boolean().optional(),
+    lastVerifiedAt: z.string().datetime().optional()
+  }),
+  params: z.object({ id: z.string().uuid().optional() }).optional(),
+  query: z.object({}).optional()
+});
+
 export const droneCreateSchema = z.object({
   body: z.object({
     droneCode: z.string().min(2).optional(),
@@ -105,6 +120,14 @@ export const missionCreateSchema = z.object({
     plannedEndAt: z.string().datetime().optional()
   }),
   params: z.object({}).optional(),
+  query: z.object({}).optional()
+});
+
+export const reportStatusSchema = z.object({
+  body: z.object({
+    status: z.enum(["REVIEW", "READY"])
+  }),
+  params: z.object({ id: z.string().uuid() }),
   query: z.object({}).optional()
 });
 
