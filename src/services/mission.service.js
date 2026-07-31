@@ -1,6 +1,7 @@
 import { prisma } from "../config/prisma.js";
 import { AppError } from "../utils/AppError.js";
 import { ensureDroneAssignable } from "./drone.service.js";
+import { sendMissionApprovalRequestEmail, sendMissionApprovedEmail } from "./email.service.js";
 
 export const listMissions = (organisationId) => {
   return prisma.mission.findMany({
@@ -14,7 +15,7 @@ export const listMissions = (organisationId) => {
   });
 };
 
-export const createMission = async (organisationId, data, actorRole) => {
+export const createMission = async (organisationId, data, actor) => {
   if (data.droneId) await ensureDroneAssignable(organisationId, data.droneId);
 
   return prisma.mission.create({
@@ -23,7 +24,8 @@ export const createMission = async (organisationId, data, actorRole) => {
       missionCode: data.missionCode,
       name: data.name,
       type: data.type,
-      status: isSystemAdministrator(actorRole) ? "APPROVED" : "PLANNED",
+      status: isSystemAdministrator(actor.role) ? "APPROVED" : "PLANNED",
+      createdById: actor.id,
       droneId: data.droneId,
       pilotId: data.pilotId,
       plannedRoute: data.plannedRoute,
@@ -34,6 +36,41 @@ export const createMission = async (organisationId, data, actorRole) => {
       plannedEndAt: data.plannedEndAt ? new Date(data.plannedEndAt) : undefined
     }
   });
+};
+
+export const notifyMissionApprovalRequired = async ({ organisationId, mission, requester }) => {
+  if (mission.status !== "PLANNED") return { notified: 0, skipped: true };
+
+  const admins = await prisma.user.findMany({
+    where: {
+      organisationId,
+      role: "SYSTEM_ADMINISTRATOR",
+      isVerified: true
+    },
+    select: {
+      id: true,
+      name: true,
+      email: true
+    }
+  });
+
+  if (!admins.length) return { notified: 0, skipped: true };
+
+  const results = await Promise.allSettled(
+    admins.map((admin) => sendMissionApprovalRequestEmail({ admin, mission, requester }))
+  );
+
+  const notified = results.filter((result) => result.status === "fulfilled" && result.value?.sent).length;
+  const failed = results.filter((result) => result.status === "rejected").length;
+  const rejected = results
+    .filter((result) => result.status === "fulfilled")
+    .flatMap((result) => result.value?.rejected ?? []);
+
+  if (failed) {
+    console.warn(`Mission approval email failed for ${failed} administrator(s).`);
+  }
+
+  return { notified, skipped: notified === 0, rejected };
 };
 
 export const updateMission = async (organisationId, id, data, actorRole) => {
@@ -64,14 +101,65 @@ export const updateMission = async (organisationId, id, data, actorRole) => {
 };
 
 export const approveMission = async (organisationId, id) => {
-  const mission = await ensureMissionExists(organisationId, id);
+  const mission = await prisma.mission.findFirst({
+    where: { id, organisationId },
+    include: { createdBy: { select: { id: true, name: true, email: true, isVerified: true } } }
+  });
+  if (!mission) throw new AppError("Mission not found", 404, "MISSION_NOT_FOUND");
   if (mission.status !== "PLANNED") {
     throw new AppError("Only missions awaiting approval can be approved", 409, "MISSION_NOT_AWAITING_APPROVAL");
   }
 
-  return prisma.mission.update({
+  const approvedMission = await prisma.mission.update({
     where: { id },
     data: { status: "APPROVED" }
+  });
+
+  return {
+    ...approvedMission,
+    createdBy: mission.createdBy
+  };
+};
+
+export const notifyMissionApproved = async ({ mission, approver }) => {
+  if (!mission.createdBy?.email || !mission.createdBy.isVerified) {
+    return { notified: 0, skipped: true };
+  }
+
+  const result = await sendMissionApprovedEmail({
+    user: mission.createdBy,
+    mission,
+    approver
+  });
+
+  return {
+    notified: result.sent ? 1 : 0,
+    skipped: !result.sent,
+    rejected: result.rejected ?? []
+  };
+};
+
+export const saveRiskAssessment = async (organisationId, missionId, data, actorId) => {
+  await ensureMissionExists(organisationId, missionId);
+
+  return prisma.riskAssessment.upsert({
+    where: { missionId },
+    create: {
+      organisationId,
+      missionId,
+      level: data.level,
+      hazards: data.hazards,
+      mitigations: data.mitigations,
+      approvedById: actorId,
+      approvedAt: new Date()
+    },
+    update: {
+      level: data.level,
+      hazards: data.hazards,
+      mitigations: data.mitigations,
+      approvedById: actorId,
+      approvedAt: new Date()
+    }
   });
 };
 

@@ -153,6 +153,22 @@ export const missionUpdateSchema = z.object({
   query: z.object({}).optional()
 });
 
+export const riskAssessmentSchema = z.object({
+  body: z.object({
+    level: z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"]),
+    hazards: z.array(z.object({
+      category: z.string().min(2),
+      risk: z.string().min(2)
+    })).min(1),
+    mitigations: z.array(z.object({
+      hazard: z.string().min(2),
+      action: z.string().min(2)
+    })).min(1)
+  }),
+  params: z.object({ id: z.string().uuid() }),
+  query: z.object({}).optional()
+});
+
 export const reportCreateSchema = z.object({
   body: z.object({
     type: z.enum(["FLIGHT_ACTIVITY", "INCIDENT", "MAINTENANCE", "COMPLIANCE", "UTILIZATION"]),

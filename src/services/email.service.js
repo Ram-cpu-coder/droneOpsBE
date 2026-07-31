@@ -23,7 +23,7 @@ const sendMail = async ({ to, subject, text, html }) => {
     return { sent: false, skipped: true, reason: "SMTP is not configured" };
   }
 
-  await transporter.sendMail({
+  const info = await transporter.sendMail({
     from: env.mailFrom,
     to,
     subject,
@@ -31,7 +31,13 @@ const sendMail = async ({ to, subject, text, html }) => {
     html
   });
 
-  return { sent: true, skipped: false };
+  return {
+    sent: true,
+    skipped: false,
+    messageId: info.messageId,
+    accepted: info.accepted,
+    rejected: info.rejected
+  };
 };
 
 export const sendVerificationEmail = async ({ user, verificationToken }) => {
@@ -297,8 +303,175 @@ export const sendEmailChangeVerificationEmail = async ({ user, pendingEmail, ema
   });
 };
 
+export const sendMissionApprovalRequestEmail = async ({ admin, mission, requester }) => {
+  const reviewUrl = `${env.clientPublicUrl}/missions/${mission.id}`;
+  const safeAdminName = escapeHtml(admin.name ?? "System Administrator");
+  const safeRequesterName = escapeHtml(requester?.name ?? "A team member");
+  const safeRequesterEmail = escapeHtml(requester?.email ?? "");
+  const safeMissionCode = escapeHtml(mission.missionCode ?? "Mission");
+  const safeMissionName = escapeHtml(mission.name ?? "Untitled mission");
+  const safeMissionType = escapeHtml(mission.type ?? "Mission");
+  const safeReviewUrl = escapeHtml(reviewUrl);
+
+  return sendMail({
+    to: admin.email,
+    subject: `Mission approval needed: ${mission.missionCode ?? mission.name}`,
+    text: [
+      `Hi ${admin.name ?? "System Administrator"},`,
+      "",
+      `${requester?.name ?? "A team member"} submitted a mission that needs System Administrator approval.`,
+      "",
+      `Mission: ${mission.missionCode ?? "Mission"} - ${mission.name ?? "Untitled mission"}`,
+      `Type: ${mission.type ?? "Mission"}`,
+      requester?.email ? `Submitted by: ${requester.name ?? requester.email} <${requester.email}>` : "",
+      "",
+      `Review and approve it here: ${reviewUrl}`
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    html: `
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width,initial-scale=1" />
+          <title>Mission approval needed</title>
+        </head>
+        <body style="margin:0;padding:0;background:#08111f;font-family:Arial,Helvetica,sans-serif;color:#f8fbff;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#08111f;padding:32px 14px;">
+            <tr>
+              <td align="center">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;border-collapse:separate;border-spacing:0;background:#0e1828;border:1px solid #22314a;border-radius:26px;overflow:hidden;box-shadow:0 28px 70px rgba(0,0,0,.35);">
+                  <tr>
+                    <td style="padding:34px 32px 26px;background:linear-gradient(135deg,#101c30 0%,#0b1423 58%,#132642 100%);">
+                      <div style="font-size:38px;line-height:1;font-weight:800;color:#ffffff;letter-spacing:0;">DRONE <span style="color:#5a95ff;">OPS</span></div>
+                      <div style="padding-top:10px;color:#9eb0c8;font-size:12px;font-weight:700;letter-spacing:2px;text-transform:uppercase;">Mission approval request</div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding:34px 32px 10px;">
+                      <div style="display:inline-block;padding:8px 12px;border:1px solid #2e65c5;border-radius:999px;background:#122a52;color:#8fb8ff;font-size:12px;font-weight:800;letter-spacing:1px;text-transform:uppercase;">Review required</div>
+                      <h1 style="margin:18px 0 12px;color:#ffffff;font-size:30px;line-height:1.16;font-weight:800;">A mission is waiting for approval</h1>
+                      <p style="margin:0;color:#c4cfdd;font-size:16px;line-height:1.65;">
+                        Hi ${safeAdminName}, ${safeRequesterName} submitted a mission that needs System Administrator review before it can start.
+                      </p>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding:18px 32px;">
+                      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #22314a;border-radius:18px;background:#111d30;">
+                        <tr>
+                          <td style="padding:18px 20px;color:#c4cfdd;font-size:14px;line-height:1.65;">
+                            <strong style="color:#ffffff;">Mission</strong><br />${safeMissionCode} - ${safeMissionName}<br /><br />
+                            <strong style="color:#ffffff;">Type</strong><br />${safeMissionType}<br /><br />
+                            <strong style="color:#ffffff;">Submitted by</strong><br />${safeRequesterName}${safeRequesterEmail ? ` &lt;${safeRequesterEmail}&gt;` : ""}
+                          </td>
+                        </tr>
+                      </table>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td align="center" style="padding:20px 32px 34px;">
+                      <a href="${safeReviewUrl}" style="display:block;width:100%;max-width:360px;min-height:54px;line-height:54px;background:linear-gradient(135deg,#5a95ff,#2672ea);border-radius:12px;color:#ffffff;text-decoration:none;font-size:17px;font-weight:800;text-align:center;">
+                        Review mission
+                      </a>
+                      <p style="margin:22px 0 0;color:#8fa0b8;font-size:13px;line-height:1.55;">If the button does not work, paste this URL into your browser:</p>
+                      <p style="margin:8px 0 0;color:#9eb0c8;font-size:12px;line-height:1.6;word-break:break-all;">${safeReviewUrl}</p>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+          </table>
+        </body>
+      </html>
+    `
+  });
+};
+
+export const sendMissionApprovedEmail = async ({ user, mission, approver }) => {
+  const missionUrl = `${env.clientPublicUrl}/missions/${mission.id}`;
+  const safeName = escapeHtml(user.name ?? "DroneOps user");
+  const safeApproverName = escapeHtml(approver?.name ?? "System Administrator");
+  const safeMissionCode = escapeHtml(mission.missionCode ?? "Mission");
+  const safeMissionName = escapeHtml(mission.name ?? "Untitled mission");
+  const safeMissionType = escapeHtml(mission.type ?? "Mission");
+  const safeMissionUrl = escapeHtml(missionUrl);
+
+  return sendMail({
+    to: user.email,
+    subject: `Mission approved: ${mission.missionCode ?? mission.name}`,
+    text: [
+      `Hi ${user.name ?? "there"},`,
+      "",
+      `${approver?.name ?? "A System Administrator"} approved your mission.`,
+      "",
+      `Mission: ${mission.missionCode ?? "Mission"} - ${mission.name ?? "Untitled mission"}`,
+      `Type: ${mission.type ?? "Mission"}`,
+      "",
+      `Open the mission profile: ${missionUrl}`
+    ].join("\n"),
+    html: `
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width,initial-scale=1" />
+          <title>Mission approved</title>
+        </head>
+        <body style="margin:0;padding:0;background:#08111f;font-family:Arial,Helvetica,sans-serif;color:#f8fbff;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#08111f;padding:32px 14px;">
+            <tr>
+              <td align="center">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;border-collapse:separate;border-spacing:0;background:#0e1828;border:1px solid #22314a;border-radius:26px;overflow:hidden;box-shadow:0 28px 70px rgba(0,0,0,.35);">
+                  <tr>
+                    <td style="padding:34px 32px 26px;background:linear-gradient(135deg,#101c30 0%,#0b1423 58%,#132642 100%);">
+                      <div style="font-size:38px;line-height:1;font-weight:800;color:#ffffff;letter-spacing:0;">DRONE <span style="color:#5a95ff;">OPS</span></div>
+                      <div style="padding-top:10px;color:#9eb0c8;font-size:12px;font-weight:700;letter-spacing:2px;text-transform:uppercase;">Mission approved</div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding:34px 32px 10px;">
+                      <div style="display:inline-block;padding:8px 12px;border:1px solid #178f6a;border-radius:999px;background:#0d372e;color:#7ce0bd;font-size:12px;font-weight:800;letter-spacing:1px;text-transform:uppercase;">Approved</div>
+                      <h1 style="margin:18px 0 12px;color:#ffffff;font-size:30px;line-height:1.16;font-weight:800;">Your mission is ready to proceed</h1>
+                      <p style="margin:0;color:#c4cfdd;font-size:16px;line-height:1.65;">
+                        Hi ${safeName}, ${safeApproverName} approved your submitted mission.
+                      </p>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding:18px 32px;">
+                      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #22314a;border-radius:18px;background:#111d30;">
+                        <tr>
+                          <td style="padding:18px 20px;color:#c4cfdd;font-size:14px;line-height:1.65;">
+                            <strong style="color:#ffffff;">Mission</strong><br />${safeMissionCode} - ${safeMissionName}<br /><br />
+                            <strong style="color:#ffffff;">Type</strong><br />${safeMissionType}
+                          </td>
+                        </tr>
+                      </table>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td align="center" style="padding:20px 32px 34px;">
+                      <a href="${safeMissionUrl}" style="display:block;width:100%;max-width:360px;min-height:54px;line-height:54px;background:linear-gradient(135deg,#5a95ff,#2672ea);border-radius:12px;color:#ffffff;text-decoration:none;font-size:17px;font-weight:800;text-align:center;">
+                        Open mission
+                      </a>
+                      <p style="margin:22px 0 0;color:#8fa0b8;font-size:13px;line-height:1.55;">If the button does not work, paste this URL into your browser:</p>
+                      <p style="margin:8px 0 0;color:#9eb0c8;font-size:12px;line-height:1.6;word-break:break-all;">${safeMissionUrl}</p>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+          </table>
+        </body>
+      </html>
+    `
+  });
+};
+
 const escapeHtml = (value = "") => {
-  return value
+  return String(value)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
