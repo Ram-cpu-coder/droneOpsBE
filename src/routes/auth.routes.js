@@ -8,6 +8,7 @@ import {
   googleCompleteProfileSchema,
   googleLoginSchema,
   loginSchema,
+  organisationCodeSchema,
   passwordResetRequestSchema,
   passwordResetSchema,
   refreshTokenSchema,
@@ -20,6 +21,7 @@ authRouter.post("/signup", authRateLimiter, validate(signupSchema), authControll
 authRouter.post("/login", authRateLimiter, validate(loginSchema), authController.login);
 authRouter.post("/google", authRateLimiter, validate(googleLoginSchema), authController.googleLogin);
 authRouter.post("/google/complete-profile", authRateLimiter, validate(googleCompleteProfileSchema), authController.completeGoogleProfile);
+authRouter.post("/organisation/resolve-code", authRateLimiter, validate(organisationCodeSchema), authController.resolveOrganisationCode);
 authRouter.post("/profile-image", uploadRateLimiter, uploadSingleImage, authController.uploadProfileImage);
 authRouter.post("/refresh-token", validate(refreshTokenSchema), authController.refreshToken);
 authRouter.get("/verify/:token", authController.verifyEmail);

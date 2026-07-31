@@ -7,5 +7,6 @@ export const settingsRouter = Router();
 settingsRouter.use(requireAuth);
 settingsRouter.get("/organisation", settingsController.getOrganisation);
 settingsRouter.put("/organisation", requirePermission("*"), settingsController.updateOrganisation);
+settingsRouter.post("/organisation/join-code/regenerate", requirePermission("*"), settingsController.regenerateOrganisationJoinCode);
 settingsRouter.get("/alert-thresholds", settingsController.getAlertThresholds);
 settingsRouter.put("/alert-thresholds", requirePermission("*"), settingsController.updateAlertThresholds);

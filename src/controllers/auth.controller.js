@@ -25,6 +25,11 @@ export const completeGoogleProfile = asyncHandler(async (req, res) => {
   return ok(res, result, "Google profile completed");
 });
 
+export const resolveOrganisationCode = asyncHandler(async (req, res) => {
+  const result = await authService.resolveOrganisationJoinCode(req.validated.body.organisationJoinCode);
+  return ok(res, result, "Organisation code resolved");
+});
+
 export const uploadProfileImage = asyncHandler(async (req, res) => {
   const result = await authService.uploadProfileImage(req.file);
   return created(res, result, "Profile image uploaded");

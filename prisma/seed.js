@@ -1,5 +1,6 @@
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
+import crypto from "node:crypto";
 import "dotenv/config";
 import pg from "pg";
 import { defaultDroneModelCatalog } from "../src/constants/droneCatalogSeed.js";
@@ -41,9 +42,37 @@ const seedDroneCatalog = async () => {
   }
 };
 
+const backfillOrganisationJoinCodes = async () => {
+  const organisations = await prisma.organisation.findMany({
+    where: { joinCode: null },
+    select: { id: true }
+  });
+
+  for (const organisation of organisations) {
+    await prisma.organisation.update({
+      where: { id: organisation.id },
+      data: { joinCode: await generateUniqueOrganisationJoinCode() }
+    });
+  }
+
+  return organisations.length;
+};
+
+const generateUniqueOrganisationJoinCode = async () => {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const code = `ORG-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+    const existing = await prisma.organisation.findUnique({ where: { joinCode: code }, select: { id: true } });
+    if (!existing) return code;
+  }
+
+  return `ORG-${Date.now().toString(36).toUpperCase()}`;
+};
+
 try {
   await seedDroneCatalog();
+  const organisationCodeCount = await backfillOrganisationJoinCodes();
   console.log(`Seeded ${defaultDroneModelCatalog.length} drone catalog models`);
+  console.log(`Backfilled ${organisationCodeCount} organisation join codes`);
 } finally {
   await prisma.$disconnect();
   await pool.end();

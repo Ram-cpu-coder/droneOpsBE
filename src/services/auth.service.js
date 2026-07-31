@@ -13,6 +13,13 @@ import { hashOneTimeToken } from "../utils/oneTimeTokens.js";
 const publicUserSelect = {
   id: true,
   organisationId: true,
+  organisation: {
+    select: {
+      id: true,
+      name: true,
+      industry: true
+    }
+  },
   name: true,
   email: true,
   role: true,
@@ -67,27 +74,19 @@ export const signup = async (payload) => {
 
   const verificationToken = crypto.randomBytes(32).toString("hex");
   const passwordHash = await hashPassword(payload.password);
+  const organisation = await getOrganisationByJoinCode(payload.organisationJoinCode);
 
-  const user = await prisma.$transaction(async (tx) => {
-    const organisation = await tx.organisation.create({
-      data: {
-        name: payload.organisationName,
-        industry: payload.industry
-      }
-    });
-
-    return tx.user.create({
-      data: {
-        organisationId: organisation.id,
-        name: payload.name,
-        email: payload.email,
-        passwordHash,
-        role: payload.role,
-        profileImageUrl: payload.profileImageUrl,
-        verificationToken
-      },
-      select: publicUserSelect
-    });
+  const user = await prisma.user.create({
+    data: {
+      organisationId: organisation.id,
+      name: payload.name,
+      email: payload.email,
+      passwordHash,
+      role: payload.role,
+      profileImageUrl: payload.profileImageUrl,
+      verificationToken
+    },
+    select: publicUserSelect
   });
 
   let emailStatus = { sent: false };
@@ -179,7 +178,7 @@ export const loginWithGoogle = async ({ credential }) => {
   return { user: safeUser, ...tokens };
 };
 
-export const completeGoogleProfile = async ({ credential, organisationName, role }) => {
+export const completeGoogleProfile = async ({ credential, organisationJoinCode, role }) => {
   const profile = await verifyGoogleCredential(credential);
   const existingUser = await prisma.user.findUnique({ where: { email: profile.email } });
 
@@ -193,19 +192,17 @@ export const completeGoogleProfile = async ({ credential, organisationName, role
     return { user: safeUser, ...tokens };
   }
 
+  const organisation = await getOrganisationByJoinCode(organisationJoinCode);
+
   const user = await prisma.user.create({
     data: {
+      organisationId: organisation.id,
       name: profile.name ?? profile.email,
       email: profile.email,
       passwordHash: await hashPassword(crypto.randomBytes(48).toString("hex")),
       role,
       isVerified: true,
-      profileImageUrl: profile.picture,
-      organisation: {
-        create: {
-          name: organisationName
-        }
-      }
+      profileImageUrl: profile.picture
     }
   });
 
@@ -417,3 +414,35 @@ export const logout = async (userId) => {
     data: { refreshTokenHash: null }
   });
 };
+
+export const resolveOrganisationJoinCode = async (joinCode) => {
+  const organisation = await getOrganisationByJoinCode(joinCode);
+
+  return {
+    id: organisation.id,
+    name: organisation.name,
+    industry: organisation.industry
+  };
+};
+
+const getOrganisationByJoinCode = async (joinCode) => {
+  const code = normaliseJoinCode(joinCode);
+  if (!code) throw new AppError("Organisation code is required", 400, "ORGANISATION_JOIN_CODE_REQUIRED");
+
+  const organisation = await prisma.organisation.findUnique({
+    where: { joinCode: code },
+    select: {
+      id: true,
+      name: true,
+      industry: true
+    }
+  });
+
+  if (!organisation) {
+    throw new AppError("Organisation code is not valid", 403, "INVALID_ORGANISATION_JOIN_CODE");
+  }
+
+  return organisation;
+};
+
+const normaliseJoinCode = (value = "") => value.toString().trim().toUpperCase().replace(/\s+/g, "");

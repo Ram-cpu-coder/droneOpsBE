@@ -138,6 +138,7 @@ model Organisation {
   id        String   @id @default(uuid())
   name      String
   industry  String?
+  joinCode  String?  @unique
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

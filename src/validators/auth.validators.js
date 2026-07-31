@@ -14,7 +14,7 @@ export const signupSchema = z.object({
     name: z.string().min(2),
     email: z.string().email(),
     password: passwordSchema,
-    organisationName: z.string().min(2),
+    organisationJoinCode: z.string().trim().min(4),
     industry: z.string().optional(),
     profileImageUrl: optionalUrl,
     role: z.enum([
@@ -49,7 +49,7 @@ export const googleLoginSchema = z.object({
 export const googleCompleteProfileSchema = z.object({
   body: z.object({
     credential: z.string().min(20),
-    organisationName: z.string().min(2),
+    organisationJoinCode: z.string().trim().min(4),
     role: z.enum([
       "OPERATIONS_MANAGER",
       "REMOTE_PILOT",
@@ -57,6 +57,14 @@ export const googleCompleteProfileSchema = z.object({
       "SAFETY_OFFICER",
       "COMPLIANCE_OFFICER"
     ]).default("OPERATIONS_MANAGER")
+  }),
+  params: z.object({}).optional(),
+  query: z.object({}).optional()
+});
+
+export const organisationCodeSchema = z.object({
+  body: z.object({
+    organisationJoinCode: z.string().trim().min(4)
   }),
   params: z.object({}).optional(),
   query: z.object({}).optional()
