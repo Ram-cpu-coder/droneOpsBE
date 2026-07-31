@@ -30,7 +30,7 @@ export const list = asyncHandler(async (req, res) => {
 export const updateMe = asyncHandler(async (req, res) => {
   const result = await userService.updateOwnProfile({
     actor: req.user,
-    payload: req.body
+    payload: req.validated.body
   });
 
   return ok(
@@ -44,7 +44,7 @@ export const updateMe = asyncHandler(async (req, res) => {
 });
 
 export const update = asyncHandler(async (req, res) => {
-  const { name, email, role, profileImageUrl, isVerified } = req.body;
+  const { name, email, role, profileImageUrl, isVerified } = req.validated.body;
   const data = {};
 
   if (name !== undefined) data.name = name?.trim();

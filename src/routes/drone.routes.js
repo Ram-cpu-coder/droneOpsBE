@@ -2,7 +2,7 @@ import { Router } from "express";
 import * as droneController from "../controllers/drone.controller.js";
 import { requireAuth, requirePermission } from "../middleware/auth.js";
 import { validate } from "../middleware/validate.js";
-import { droneCatalogModelSchema, droneCreateSchema, idParamSchema } from "../validators/core.validators.js";
+import { droneCatalogModelSchema, droneCreateSchema, droneUpdateSchema, idParamSchema } from "../validators/core.validators.js";
 
 export const droneRouter = Router();
 
@@ -13,5 +13,5 @@ droneRouter.put("/catalog/:id", requirePermission("*"), validate(droneCatalogMod
 droneRouter.delete("/catalog/:id", requirePermission("*"), validate(idParamSchema), droneController.removeCatalogModel);
 droneRouter.get("/", requirePermission("drones:read"), droneController.list);
 droneRouter.post("/", requirePermission("drones:manage"), validate(droneCreateSchema), droneController.create);
-droneRouter.put("/:id", requirePermission("drones:manage"), validate(idParamSchema), droneController.update);
+droneRouter.put("/:id", requirePermission("drones:manage"), validate(droneUpdateSchema), droneController.update);
 droneRouter.delete("/:id", requirePermission("drones:manage"), validate(idParamSchema), droneController.remove);

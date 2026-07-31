@@ -22,12 +22,16 @@ export const list = asyncHandler(async (req, res) => {
 });
 
 export const create = asyncHandler(async (req, res) => {
+  const { type, title, status, dataSnapshot, fileUrl } = req.validated.body;
   const report = await prisma.report.create({
     data: {
       organisationId: req.user.organisationId,
       generatedById: req.user.id,
-      ...req.body,
-      status: req.body.status === "READY" ? "READY" : "REVIEW"
+      type,
+      title,
+      status: status === "READY" ? "READY" : "REVIEW",
+      dataSnapshot,
+      fileUrl
     }
   });
   await writeAudit({
@@ -56,7 +60,7 @@ export const summary = asyncHandler(async (req, res) => {
 });
 
 export const generate = asyncHandler(async (req, res) => {
-  const requestedType = String(req.body?.type ?? "UTILIZATION").toUpperCase();
+  const requestedType = String(req.validated.body?.type ?? "UTILIZATION").toUpperCase();
 
   const [drones, missions, incidents, maintenance] = await Promise.all([
     prisma.drone.findMany({
@@ -222,7 +226,7 @@ export const generate = asyncHandler(async (req, res) => {
 });
 
 export const updateStatus = asyncHandler(async (req, res) => {
-  const status = String(req.body?.status ?? "").toUpperCase();
+  const status = req.validated.body.status;
   const report = await prisma.report.findFirst({
     where: {
       id: req.params.id,

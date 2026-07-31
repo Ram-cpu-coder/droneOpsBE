@@ -50,11 +50,10 @@ export const createDrone = async (organisationId, data) => {
 };
 
 export const updateDrone = async (organisationId, id, data) => {
-  await ensureDroneExists(organisationId, id);
-  const updateData = { ...data };
+  const currentDrone = await ensureDroneExists(organisationId, id);
+  const updateData = normalizeDroneDates({ ...data });
 
   if (data.manufacturer || data.model) {
-    const currentDrone = await ensureDroneExists(organisationId, id);
     const manufacturer = data.manufacturer ?? currentDrone.manufacturer;
     const model = data.model ?? currentDrone.model;
     const catalogModel = await findDroneModel(manufacturer, model);
@@ -70,6 +69,8 @@ export const updateDrone = async (organisationId, id, data) => {
       updateData.telemetryProvider = catalogModel.telemetryProvider;
     }
   }
+
+  validateDroneUpdateState({ ...currentDrone, ...updateData });
 
   return prisma.drone.update({ where: { id }, data: updateData });
 };
@@ -137,4 +138,71 @@ const generateDroneCode = async (organisationId) => {
   }
 
   return `DRN-${Date.now().toString().slice(-6)}`;
+};
+
+const normalizeDroneDates = (data) => {
+  ["purchaseDate", "lastMaintenanceDate", "nextMaintenanceDate", "certificationExpiry"].forEach((field) => {
+    if (data[field]) data[field] = new Date(data[field]);
+  });
+
+  return data;
+};
+
+const validateDroneUpdateState = (drone) => {
+  const today = startOfToday();
+  const purchaseDate = toDate(drone.purchaseDate);
+  const lastMaintenanceDate = toDate(drone.lastMaintenanceDate);
+  const nextMaintenanceDate = toDate(drone.nextMaintenanceDate);
+  const certificationExpiry = toDate(drone.certificationExpiry);
+
+  if (purchaseDate && purchaseDate > today) {
+    throw new AppError("Purchase date cannot be in the future", 400, "INVALID_DRONE_DATES");
+  }
+
+  if (lastMaintenanceDate && lastMaintenanceDate > today) {
+    throw new AppError("Last maintenance date cannot be in the future", 400, "INVALID_DRONE_DATES");
+  }
+
+  if (purchaseDate && lastMaintenanceDate && lastMaintenanceDate < purchaseDate) {
+    throw new AppError("Last maintenance date cannot be before purchase date", 400, "INVALID_DRONE_DATES");
+  }
+
+  if (lastMaintenanceDate && nextMaintenanceDate && nextMaintenanceDate < lastMaintenanceDate) {
+    throw new AppError("Next inspection due cannot be before last maintenance date", 400, "INVALID_DRONE_DATES");
+  }
+
+  if (drone.certificationStatus === "CERTIFIED" && !drone.certificationReference) {
+    throw new AppError("Certification reference is required for certified drones", 400, "INVALID_DRONE_CERTIFICATION");
+  }
+
+  if (drone.certificationStatus === "CERTIFIED" && !certificationExpiry) {
+    throw new AppError("Certification expiry is required for certified drones", 400, "INVALID_DRONE_CERTIFICATION");
+  }
+
+  if (drone.certificationStatus === "CERTIFIED" && certificationExpiry && certificationExpiry < today) {
+    throw new AppError("Expired certification cannot be marked certified", 400, "INVALID_DRONE_CERTIFICATION");
+  }
+
+  if (drone.status === "AVAILABLE" && drone.certificationStatus !== "CERTIFIED") {
+    throw new AppError("Only certified drones can be marked available", 400, "INVALID_DRONE_STATUS");
+  }
+
+  if (drone.status === "AVAILABLE" && certificationExpiry && certificationExpiry < today) {
+    throw new AppError("A drone with expired certification cannot be marked available", 400, "INVALID_DRONE_STATUS");
+  }
+
+  if (drone.telemetryProvider && drone.telemetryProvider !== "NONE" && !drone.externalDeviceId) {
+    throw new AppError("Vendor drone/device ID is required when a telemetry connector is selected", 400, "INVALID_DRONE_TELEMETRY");
+  }
+};
+
+const toDate = (value) => {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const startOfToday = () => {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate());
 };

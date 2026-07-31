@@ -27,7 +27,7 @@ export const create = asyncHandler(async (req, res) => {
 });
 
 export const update = asyncHandler(async (req, res) => {
-  const incident = await incidentService.updateIncident(req.user.organisationId, req.params.id, req.body);
+  const incident = await incidentService.updateIncident(req.user.organisationId, req.params.id, req.validated.body);
   await writeAudit({
     organisationId: req.user.organisationId,
     actorId: req.user.id,
@@ -39,7 +39,7 @@ export const update = asyncHandler(async (req, res) => {
       title: incident.title,
       severity: incident.severity,
       status: incident.status,
-      fields: Object.keys(req.body)
+      fields: Object.keys(req.validated.body)
     }
   });
   return ok(res, incident, "Incident updated");

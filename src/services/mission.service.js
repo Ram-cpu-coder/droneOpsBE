@@ -39,6 +39,7 @@ export const createMission = async (organisationId, data, actorRole) => {
 export const updateMission = async (organisationId, id, data, actorRole) => {
   const mission = await ensureMissionExists(organisationId, id);
   const normalizedData = normalizeMissionInput(data);
+  validateMissionSchedule({ ...mission, ...normalizedData });
 
   if (normalizedData.droneId && normalizedData.droneId !== mission.droneId) {
     await ensureDroneAssignable(organisationId, normalizedData.droneId);
@@ -133,6 +134,15 @@ const normalizeMissionInput = (data = {}) => ({
   plannedStartAt: data.plannedStartAt ? new Date(data.plannedStartAt) : undefined,
   plannedEndAt: data.plannedEndAt ? new Date(data.plannedEndAt) : undefined
 });
+
+const validateMissionSchedule = (mission) => {
+  const plannedStartAt = mission.plannedStartAt ? new Date(mission.plannedStartAt) : null;
+  const plannedEndAt = mission.plannedEndAt ? new Date(mission.plannedEndAt) : null;
+
+  if (plannedStartAt && plannedEndAt && plannedEndAt < plannedStartAt) {
+    throw new AppError("Mission end time cannot be before start time", 400, "INVALID_MISSION_SCHEDULE");
+  }
+};
 
 const syncMissionDroneStatus = async (tx, mission, nextStatus, nextDroneId) => {
   const targetDroneId = nextDroneId ?? mission.droneId;

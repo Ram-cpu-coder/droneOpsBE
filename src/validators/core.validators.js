@@ -21,8 +21,7 @@ export const droneCatalogModelSchema = z.object({
   query: z.object({}).optional()
 });
 
-export const droneCreateSchema = z.object({
-  body: z.object({
+const dronePayloadSchema = z.object({
     droneCode: z.string().min(2).optional(),
     model: z.string().min(2),
     manufacturer: z.string().optional(),
@@ -42,61 +41,17 @@ export const droneCreateSchema = z.object({
     telemetryProvider: z.enum(["NONE", "GENERIC_REST", "DJI", "AUTEL", "MAVLINK"]).default("NONE"),
     externalDeviceId: z.string().optional(),
     connectorConfig: z.record(z.unknown()).optional()
-  }).superRefine((data, ctx) => {
-    const today = startOfToday();
-    const purchaseDate = data.purchaseDate ? new Date(data.purchaseDate) : null;
-    const lastMaintenanceDate = data.lastMaintenanceDate ? new Date(data.lastMaintenanceDate) : null;
-    const certificationExpiry = data.certificationExpiry ? new Date(data.certificationExpiry) : null;
-    const nextMaintenanceDate = data.nextMaintenanceDate ? new Date(data.nextMaintenanceDate) : null;
+  });
 
-    if (purchaseDate && purchaseDate > today) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["purchaseDate"], message: "Purchase date cannot be in the future" });
-    }
-
-    if (purchaseDate && lastMaintenanceDate && lastMaintenanceDate < purchaseDate) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["lastMaintenanceDate"], message: "Last maintenance date cannot be before purchase date" });
-    }
-
-    if (lastMaintenanceDate && lastMaintenanceDate > today) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["lastMaintenanceDate"], message: "Last maintenance date cannot be in the future" });
-    }
-
-    if (nextMaintenanceDate && lastMaintenanceDate && nextMaintenanceDate < lastMaintenanceDate) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["nextMaintenanceDate"], message: "Next inspection due cannot be before last maintenance date" });
-    }
-
-    if (data.certificationStatus === "CERTIFIED" && !data.certificationReference) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["certificationReference"], message: "Certification reference is required for certified drones" });
-    }
-
-    if (data.certificationStatus === "CERTIFIED" && !certificationExpiry) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["certificationExpiry"], message: "Certification expiry is required for certified drones" });
-    }
-
-    if (certificationExpiry && certificationExpiry < today && data.certificationStatus === "CERTIFIED") {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["certificationExpiry"], message: "Expired certification cannot be marked certified" });
-    }
-
-    if (data.status === "AVAILABLE" && data.certificationStatus !== "CERTIFIED") {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["status"], message: "Only certified drones can be marked available" });
-    }
-
-    if (data.status === "AVAILABLE" && certificationExpiry && certificationExpiry < today) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["status"], message: "A drone with expired certification cannot be marked available" });
-    }
-
-    if (data.telemetryProvider !== "NONE" && !data.externalDeviceId) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["externalDeviceId"], message: "Vendor drone/device ID is required when a telemetry connector is selected" });
-    }
-
-    if (data.telemetryProvider === "GENERIC_REST") {
-      const telemetryUrl = data.connectorConfig?.telemetryUrl;
-      if (typeof telemetryUrl !== "string" || !z.string().url().safeParse(telemetryUrl).success) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["connectorConfig", "telemetryUrl"], message: "A valid vendor telemetry URL is required for Generic REST" });
-      }
-    }
-  }),
+export const droneCreateSchema = z.object({
+  body: dronePayloadSchema.superRefine(validateDronePayload),
   params: z.object({}).optional(),
+  query: z.object({}).optional()
+});
+
+export const droneUpdateSchema = z.object({
+  body: dronePayloadSchema.partial().superRefine(validateDronePayload),
+  params: z.object({ id: z.string().uuid() }),
   query: z.object({}).optional()
 });
 
@@ -104,6 +59,61 @@ const startOfToday = () => {
   const now = new Date();
   return new Date(now.getFullYear(), now.getMonth(), now.getDate());
 };
+
+function validateDronePayload(data, ctx) {
+  const today = startOfToday();
+  const purchaseDate = data.purchaseDate ? new Date(data.purchaseDate) : null;
+  const lastMaintenanceDate = data.lastMaintenanceDate ? new Date(data.lastMaintenanceDate) : null;
+  const certificationExpiry = data.certificationExpiry ? new Date(data.certificationExpiry) : null;
+  const nextMaintenanceDate = data.nextMaintenanceDate ? new Date(data.nextMaintenanceDate) : null;
+
+  if (purchaseDate && purchaseDate > today) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["purchaseDate"], message: "Purchase date cannot be in the future" });
+  }
+
+  if (purchaseDate && lastMaintenanceDate && lastMaintenanceDate < purchaseDate) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["lastMaintenanceDate"], message: "Last maintenance date cannot be before purchase date" });
+  }
+
+  if (lastMaintenanceDate && lastMaintenanceDate > today) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["lastMaintenanceDate"], message: "Last maintenance date cannot be in the future" });
+  }
+
+  if (nextMaintenanceDate && lastMaintenanceDate && nextMaintenanceDate < lastMaintenanceDate) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["nextMaintenanceDate"], message: "Next inspection due cannot be before last maintenance date" });
+  }
+
+  if (data.certificationStatus === "CERTIFIED" && !data.certificationReference) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["certificationReference"], message: "Certification reference is required for certified drones" });
+  }
+
+  if (data.certificationStatus === "CERTIFIED" && !certificationExpiry) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["certificationExpiry"], message: "Certification expiry is required for certified drones" });
+  }
+
+  if (certificationExpiry && certificationExpiry < today && data.certificationStatus === "CERTIFIED") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["certificationExpiry"], message: "Expired certification cannot be marked certified" });
+  }
+
+  if (data.status === "AVAILABLE" && data.certificationStatus && data.certificationStatus !== "CERTIFIED") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["status"], message: "Only certified drones can be marked available" });
+  }
+
+  if (data.status === "AVAILABLE" && certificationExpiry && certificationExpiry < today) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["status"], message: "A drone with expired certification cannot be marked available" });
+  }
+
+  if (data.telemetryProvider && data.telemetryProvider !== "NONE" && !data.externalDeviceId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["externalDeviceId"], message: "Vendor drone/device ID is required when a telemetry connector is selected" });
+  }
+
+  if (data.telemetryProvider === "GENERIC_REST") {
+    const telemetryUrl = data.connectorConfig?.telemetryUrl;
+    if (typeof telemetryUrl !== "string" || !z.string().url().safeParse(telemetryUrl).success) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["connectorConfig", "telemetryUrl"], message: "A valid vendor telemetry URL is required for Generic REST" });
+    }
+  }
+}
 
 export const missionCreateSchema = z.object({
   body: z.object({
@@ -118,7 +128,47 @@ export const missionCreateSchema = z.object({
     operatingArea: z.string().optional(),
     plannedStartAt: z.string().datetime().optional(),
     plannedEndAt: z.string().datetime().optional()
+  }).superRefine(validateMissionDates),
+  params: z.object({}).optional(),
+  query: z.object({}).optional()
+});
+
+export const missionUpdateSchema = z.object({
+  body: z.object({
+    missionCode: z.string().min(2).optional(),
+    name: z.string().min(2).optional(),
+    type: z.string().min(2).optional(),
+    status: z.enum(["PLANNED", "APPROVED", "ACTIVE", "COMPLETED", "ABORTED", "CANCELLED"]).optional(),
+    droneId: z.string().uuid().optional(),
+    pilotId: z.string().uuid().optional(),
+    plannedRoute: z.unknown().optional(),
+    geofenceConfig: z.unknown().optional(),
+    launchSite: z.string().optional(),
+    operatingArea: z.string().optional(),
+    plannedStartAt: z.string().datetime().optional(),
+    plannedEndAt: z.string().datetime().optional(),
+    progress: z.number().int().min(0).max(100).optional()
+  }).superRefine(validateMissionDates),
+  params: z.object({ id: z.string().uuid() }),
+  query: z.object({}).optional()
+});
+
+export const reportCreateSchema = z.object({
+  body: z.object({
+    type: z.enum(["FLIGHT_ACTIVITY", "INCIDENT", "MAINTENANCE", "COMPLIANCE", "UTILIZATION"]),
+    title: z.string().min(2),
+    status: z.enum(["REVIEW", "READY"]).optional(),
+    dataSnapshot: z.unknown(),
+    fileUrl: z.string().url().optional()
   }),
+  params: z.object({}).optional(),
+  query: z.object({}).optional()
+});
+
+export const reportGenerateSchema = z.object({
+  body: z.object({
+    type: z.enum(["FLIGHT_ACTIVITY", "INCIDENT", "MAINTENANCE", "COMPLIANCE", "UTILIZATION"]).optional()
+  }).optional(),
   params: z.object({}).optional(),
   query: z.object({}).optional()
 });
@@ -143,6 +193,68 @@ export const incidentCreateSchema = z.object({
     location: z.string().optional(),
     source: z.string().optional(),
     details: z.string().optional()
+  }),
+  params: z.object({}).optional(),
+  query: z.object({}).optional()
+});
+
+export const incidentUpdateSchema = z.object({
+  body: z.object({
+    incidentCode: z.string().min(2).optional(),
+    type: z.enum(["LOSS_OF_SIGNAL", "GEOFENCE_BREACH", "LOW_BATTERY", "COLLISION", "EMERGENCY_LANDING", "EQUIPMENT_FAILURE", "WEATHER_EVENT"]).optional(),
+    title: z.string().min(2).optional(),
+    severity: z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"]).optional(),
+    status: z.enum(["OPEN", "UNDER_REVIEW", "INVESTIGATION", "CORRECTIVE_ACTION", "CLOSED"]).optional(),
+    droneId: z.string().uuid().optional(),
+    missionId: z.string().uuid().optional(),
+    assignedToId: z.string().uuid().optional(),
+    location: z.string().optional(),
+    source: z.string().optional(),
+    details: z.string().optional(),
+    rootCause: z.string().optional(),
+    correctiveAction: z.string().optional(),
+    timeline: z.unknown().optional()
+  }),
+  params: z.object({ id: z.string().uuid() }),
+  query: z.object({}).optional()
+});
+
+export const userMeUpdateSchema = z.object({
+  body: z.object({
+    name: z.string().min(1).optional(),
+    email: z.string().email().optional(),
+    profileImageUrl: z.string().url().nullable().optional()
+  }),
+  params: z.object({}).optional(),
+  query: z.object({}).optional()
+});
+
+export const userUpdateSchema = z.object({
+  body: z.object({
+    name: z.string().min(1).optional(),
+    email: z.string().email().optional(),
+    role: z.enum(["OPERATIONS_MANAGER", "REMOTE_PILOT", "MAINTENANCE_COORDINATOR", "SAFETY_OFFICER", "COMPLIANCE_OFFICER", "SYSTEM_ADMINISTRATOR"]).optional(),
+    profileImageUrl: z.string().url().nullable().optional(),
+    isVerified: z.boolean().optional()
+  }),
+  params: z.object({ id: z.string().uuid() }),
+  query: z.object({}).optional()
+});
+
+export const organisationUpdateSchema = z.object({
+  body: z.object({
+    name: z.string().min(1),
+    industry: z.string().optional().nullable()
+  }),
+  params: z.object({}).optional(),
+  query: z.object({}).optional()
+});
+
+export const alertThresholdSchema = z.object({
+  body: z.object({
+    minimumLandingBattery: z.number().min(0).max(100),
+    maximumWindSpeed: z.number().min(0).max(250),
+    lowSignalWarning: z.number().min(0).max(100)
   }),
   params: z.object({}).optional(),
   query: z.object({}).optional()
@@ -175,3 +287,12 @@ export const telemetryCreateSchema = z.object({
   params: z.object({}).optional(),
   query: z.object({}).optional()
 });
+
+function validateMissionDates(data, ctx) {
+  const plannedStartAt = data.plannedStartAt ? new Date(data.plannedStartAt) : null;
+  const plannedEndAt = data.plannedEndAt ? new Date(data.plannedEndAt) : null;
+
+  if (plannedStartAt && plannedEndAt && plannedEndAt < plannedStartAt) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["plannedEndAt"], message: "Mission end time cannot be before start time" });
+  }
+}

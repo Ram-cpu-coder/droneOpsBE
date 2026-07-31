@@ -26,8 +26,8 @@ export const getOrganisation = asyncHandler(async (req, res) => {
 });
 
 export const updateOrganisation = asyncHandler(async (req, res) => {
-  const name = req.body.name?.trim();
-  const industry = req.body.industry?.trim() || null;
+  const name = req.validated.body.name?.trim();
+  const industry = req.validated.body.industry?.trim() || null;
 
   if (!name) throw new AppError("Organisation name is required", 400, "ORGANISATION_NAME_REQUIRED");
 
@@ -79,7 +79,7 @@ export const getAlertThresholds = asyncHandler(async (req, res) => {
 });
 
 export const updateAlertThresholds = asyncHandler(async (req, res) => {
-  const thresholds = await alertSettingsService.updateAlertThresholds(req.user.organisationId, req.body);
+  const thresholds = await alertSettingsService.updateAlertThresholds(req.user.organisationId, req.validated.body);
 
   await writeAudit({
     organisationId: req.user.organisationId,

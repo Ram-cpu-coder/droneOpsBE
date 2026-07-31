@@ -27,7 +27,7 @@ export const create = asyncHandler(async (req, res) => {
 });
 
 export const update = asyncHandler(async (req, res) => {
-  const mission = await missionService.updateMission(req.user.organisationId, req.params.id, req.body, req.user.role);
+  const mission = await missionService.updateMission(req.user.organisationId, req.params.id, req.validated.body, req.user.role);
   await writeAudit({
     organisationId: req.user.organisationId,
     actorId: req.user.id,
@@ -38,7 +38,7 @@ export const update = asyncHandler(async (req, res) => {
       missionCode: mission.missionCode,
       name: mission.name,
       status: mission.status,
-      fields: Object.keys(req.body)
+      fields: Object.keys(req.validated.body)
     }
   });
   return ok(res, mission, "Mission updated");
