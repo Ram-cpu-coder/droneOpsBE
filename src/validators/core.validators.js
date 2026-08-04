@@ -116,8 +116,8 @@ function validateDronePayload(data, ctx) {
 }
 
 export const missionCreateSchema = z.object({
-  body: z.object({
-    missionCode: z.string().min(2),
+  body: z.preprocess((value) => value ?? {}, z.object({
+    missionCode: z.string().min(2).optional(),
     name: z.string().min(2),
     type: z.string().min(2),
     droneId: z.string().uuid().optional(),
@@ -128,7 +128,7 @@ export const missionCreateSchema = z.object({
     operatingArea: z.string().optional(),
     plannedStartAt: z.string().datetime().optional(),
     plannedEndAt: z.string().datetime().optional()
-  }).superRefine(validateMissionDates),
+  }).superRefine(validateMissionDates)),
   params: z.object({}).optional(),
   query: z.object({}).optional()
 });
@@ -311,4 +311,63 @@ function validateMissionDates(data, ctx) {
   if (plannedStartAt && plannedEndAt && plannedEndAt < plannedStartAt) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["plannedEndAt"], message: "Mission end time cannot be before start time" });
   }
+
+  validateOperatingAreaCoverage(data, ctx);
 }
+
+function validateOperatingAreaCoverage(data, ctx) {
+  const plannedRoute = data.plannedRoute;
+  if (!plannedRoute || typeof plannedRoute !== "object" || Array.isArray(plannedRoute)) return;
+
+  const operatingArea = normalizeGeoPoint(plannedRoute.operatingArea);
+  const waypoints = Array.isArray(plannedRoute.waypoints)
+    ? plannedRoute.waypoints.map(normalizeGeoPoint).filter(Boolean)
+    : [];
+
+  if (!operatingArea || waypoints.length < 2) return;
+
+  const radiusMeters = Number(plannedRoute.operatingArea?.radiusMeters) || 500;
+  const routeStart = waypoints[0];
+  const routeEnd = waypoints[waypoints.length - 1];
+  const uncoveredPoints = [
+    { label: "start point", point: routeStart },
+    { label: "end point", point: routeEnd }
+  ].filter(({ point }) => getDistanceMeters(operatingArea, point) > radiusMeters);
+
+  if (!uncoveredPoints.length) return;
+
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    path: ["plannedRoute", "operatingArea"],
+    message: `Operating area must cover the route ${uncoveredPoints.map(({ label }) => label).join(" and ")}`
+  });
+}
+
+function normalizeGeoPoint(point) {
+  if (!point) return null;
+
+  if (Array.isArray(point)) {
+    const longitude = Number(point[0]);
+    const latitude = Number(point[1]);
+    return Number.isFinite(latitude) && Number.isFinite(longitude) ? { latitude, longitude } : null;
+  }
+
+  if (typeof point !== "object") return null;
+
+  const latitude = Number(point.latitude ?? point.lat);
+  const longitude = Number(point.longitude ?? point.lng ?? point.lon);
+  return Number.isFinite(latitude) && Number.isFinite(longitude) ? { latitude, longitude } : null;
+}
+
+function getDistanceMeters(from, to) {
+  const earthRadiusMeters = 6371000;
+  const fromLat = toRadians(Number(from.latitude));
+  const toLat = toRadians(Number(to.latitude));
+  const deltaLat = toRadians(Number(to.latitude) - Number(from.latitude));
+  const deltaLng = toRadians(Number(to.longitude) - Number(from.longitude));
+  const haversine = Math.sin(deltaLat / 2) ** 2
+    + Math.cos(fromLat) * Math.cos(toLat) * Math.sin(deltaLng / 2) ** 2;
+  return 2 * earthRadiusMeters * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
+}
+
+const toRadians = (degrees) => degrees * (Math.PI / 180);

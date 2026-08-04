@@ -72,8 +72,8 @@ export const organisationCodeSchema = z.object({
 
 export const refreshTokenSchema = z.object({
   body: z.object({
-    refreshToken: z.string().min(1)
-  }),
+    refreshToken: z.string().min(1).optional()
+  }).optional().default({}),
   params: z.object({}).optional(),
   query: z.object({}).optional()
 });

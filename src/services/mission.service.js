@@ -17,11 +17,12 @@ export const listMissions = (organisationId) => {
 
 export const createMission = async (organisationId, data, actor) => {
   if (data.droneId) await ensureDroneAssignable(organisationId, data.droneId);
+  const missionCode = data.missionCode ?? await generateMissionCode(organisationId);
 
   return prisma.mission.create({
     data: {
       organisationId,
-      missionCode: data.missionCode,
+      missionCode,
       name: data.name,
       type: data.type,
       status: isSystemAdministrator(actor.role) ? "APPROVED" : "PLANNED",
@@ -254,3 +255,18 @@ const syncMissionDroneStatus = async (tx, mission, nextStatus, nextDroneId) => {
 };
 
 const isSystemAdministrator = (role) => role === "SYSTEM_ADMINISTRATOR";
+
+const generateMissionCode = async (organisationId) => {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const count = await prisma.mission.count({ where: { organisationId } });
+    const candidate = `MIS-${String(count + 1 + attempt).padStart(4, "0")}`;
+    const existing = await prisma.mission.findFirst({
+      where: { organisationId, missionCode: candidate },
+      select: { id: true }
+    });
+
+    if (!existing) return candidate;
+  }
+
+  return `MIS-${Date.now().toString().slice(-6)}`;
+};

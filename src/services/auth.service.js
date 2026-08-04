@@ -396,6 +396,8 @@ export const resetPassword = async ({ token, password }) => {
 };
 
 export const refreshSession = async (refreshToken) => {
+  if (!refreshToken) throw new AppError("Invalid refresh token", 401, "INVALID_REFRESH_TOKEN");
+
   const payload = verifyRefreshToken(refreshToken);
   const user = await prisma.user.findUnique({ where: { id: payload.sub } });
   if (!user?.refreshTokenHash) throw new AppError("Invalid refresh token", 401, "INVALID_REFRESH_TOKEN");

@@ -5,6 +5,32 @@ import { env } from "../config/env.js";
 import { renderPasswordResetFormPage, renderPasswordResetResultPage } from "../templates/passwordResetPage.template.js";
 import { renderVerificationPage } from "../templates/verificationPage.template.js";
 
+const refreshCookieName = "droneops_refresh";
+
+const refreshCookieOptions = {
+  httpOnly: true,
+  secure: env.nodeEnv === "production",
+  sameSite: env.nodeEnv === "production" ? "none" : "lax",
+  path: `${env.apiPrefix}/auth`,
+  maxAge: 7 * 24 * 60 * 60 * 1000
+};
+
+const attachRefreshCookie = (res, result) => {
+  if (!result?.refreshToken) return result;
+
+  res.cookie(refreshCookieName, result.refreshToken, refreshCookieOptions);
+
+  const { refreshToken, ...publicResult } = result;
+  return publicResult;
+};
+
+const clearRefreshCookie = (res) => {
+  res.clearCookie(refreshCookieName, {
+    ...refreshCookieOptions,
+    maxAge: undefined
+  });
+};
+
 export const signup = asyncHandler(async (req, res) => {
   const result = await authService.signup(req.validated.body);
   return created(res, result, "Signup created. Verify email before login.");
@@ -12,17 +38,17 @@ export const signup = asyncHandler(async (req, res) => {
 
 export const login = asyncHandler(async (req, res) => {
   const result = await authService.login(req.validated.body);
-  return ok(res, result, "Login successful");
+  return ok(res, attachRefreshCookie(res, result), "Login successful");
 });
 
 export const googleLogin = asyncHandler(async (req, res) => {
   const result = await authService.loginWithGoogle(req.validated.body);
-  return ok(res, result, "Google login successful");
+  return ok(res, attachRefreshCookie(res, result), "Google login successful");
 });
 
 export const completeGoogleProfile = asyncHandler(async (req, res) => {
   const result = await authService.completeGoogleProfile(req.validated.body);
-  return ok(res, result, "Google profile completed");
+  return ok(res, attachRefreshCookie(res, result), "Google profile completed");
 });
 
 export const resolveOrganisationCode = asyncHandler(async (req, res) => {
@@ -157,11 +183,13 @@ export const resetPassword = asyncHandler(async (req, res) => {
 });
 
 export const refreshToken = asyncHandler(async (req, res) => {
-  const result = await authService.refreshSession(req.validated.body.refreshToken);
-  return ok(res, result, "Session refreshed");
+  const refreshTokenValue = req.cookies?.[refreshCookieName] ?? req.validated.body.refreshToken;
+  const result = await authService.refreshSession(refreshTokenValue);
+  return ok(res, attachRefreshCookie(res, result), "Session refreshed");
 });
 
 export const logout = asyncHandler(async (req, res) => {
   await authService.logout(req.user.id);
+  clearRefreshCookie(res);
   return noContent(res);
 });
