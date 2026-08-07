@@ -9,22 +9,60 @@ const passwordSchema = z.string()
   .regex(/\d/, "Password must include one number")
   .regex(/[^A-Za-z0-9]/, "Password must include one special character");
 
+const roleAliases = {
+  operations_manager: "OPERATIONS_MANAGER",
+  remote_pilot: "REMOTE_PILOT",
+  maintenance_coordinator: "MAINTENANCE_COORDINATOR",
+  safety_officer: "SAFETY_OFFICER",
+  compliance_officer: "COMPLIANCE_OFFICER",
+  system_administrator: "SYSTEM_ADMINISTRATOR"
+};
+
+const normaliseOrganisationPayload = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+
+  const body = { ...value };
+
+  if (!body.organisationMode && body.organizationMode) {
+    body.organisationMode = body.organizationMode;
+  }
+
+  if (!body.organisationJoinCode && body.organizationCode) {
+    body.organisationJoinCode = body.organizationCode;
+  }
+
+  if (!body.organisationName && body.organizationName) {
+    body.organisationName = body.organizationName;
+  }
+
+  if (roleAliases[body.role]) {
+    body.role = roleAliases[body.role];
+  }
+
+  return body;
+};
+
+const roleSchema = z.enum([
+  "OPERATIONS_MANAGER",
+  "REMOTE_PILOT",
+  "MAINTENANCE_COORDINATOR",
+  "SAFETY_OFFICER",
+  "COMPLIANCE_OFFICER",
+  "SYSTEM_ADMINISTRATOR"
+]).default("OPERATIONS_MANAGER");
+
 export const signupSchema = z.object({
-  body: z.object({
+  body: z.preprocess(normaliseOrganisationPayload, z.object({
     name: z.string().min(2),
     email: z.string().email(),
     password: passwordSchema,
-    organisationJoinCode: z.string().trim().min(4),
+    organisationMode: z.enum(["join", "create"]).default("join"),
+    organisationJoinCode: z.string().trim().min(4).optional(),
+    organisationName: z.string().trim().min(2).optional(),
     industry: z.string().optional(),
     profileImageUrl: optionalUrl,
-    role: z.enum([
-      "OPERATIONS_MANAGER",
-      "REMOTE_PILOT",
-      "MAINTENANCE_COORDINATOR",
-      "SAFETY_OFFICER",
-      "COMPLIANCE_OFFICER"
-    ]).default("OPERATIONS_MANAGER")
-  }),
+    role: roleSchema
+  }).superRefine(validateOrganisationAccessMode)),
   params: z.object({}).optional(),
   query: z.object({}).optional()
 });
@@ -47,20 +85,30 @@ export const googleLoginSchema = z.object({
 });
 
 export const googleCompleteProfileSchema = z.object({
-  body: z.object({
+  body: z.preprocess(normaliseOrganisationPayload, z.object({
     credential: z.string().min(20),
-    organisationJoinCode: z.string().trim().min(4),
-    role: z.enum([
-      "OPERATIONS_MANAGER",
-      "REMOTE_PILOT",
-      "MAINTENANCE_COORDINATOR",
-      "SAFETY_OFFICER",
-      "COMPLIANCE_OFFICER"
-    ]).default("OPERATIONS_MANAGER")
-  }),
+    organisationMode: z.enum(["join", "create"]).default("join"),
+    organisationJoinCode: z.string().trim().min(4).optional(),
+    organisationName: z.string().trim().min(2).optional(),
+    industry: z.string().optional(),
+    role: roleSchema
+  }).superRefine(validateOrganisationAccessMode)),
   params: z.object({}).optional(),
   query: z.object({}).optional()
 });
+
+function validateOrganisationAccessMode(data, ctx) {
+  if (data.organisationMode === "create") {
+    if (!data.organisationName) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["organisationName"], message: "Organisation name is required" });
+    }
+    return;
+  }
+
+  if (!data.organisationJoinCode) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["organisationJoinCode"], message: "Organisation code is required" });
+  }
+}
 
 export const organisationCodeSchema = z.object({
   body: z.object({

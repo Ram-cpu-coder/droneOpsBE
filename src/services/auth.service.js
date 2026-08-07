@@ -74,7 +74,8 @@ export const signup = async (payload) => {
 
   const verificationToken = crypto.randomBytes(32).toString("hex");
   const passwordHash = await hashPassword(payload.password);
-  const organisation = await getOrganisationByJoinCode(payload.organisationJoinCode);
+  const organisation = await resolveSignupOrganisation(payload);
+  const role = payload.organisationMode === "create" ? "SYSTEM_ADMINISTRATOR" : payload.role;
 
   const user = await prisma.user.create({
     data: {
@@ -82,7 +83,7 @@ export const signup = async (payload) => {
       name: payload.name,
       email: payload.email,
       passwordHash,
-      role: payload.role,
+      role,
       profileImageUrl: payload.profileImageUrl,
       verificationToken
     },
@@ -106,7 +107,8 @@ export const signup = async (payload) => {
     metadata: {
       name: user.name,
       email: user.email,
-      role: user.role
+      role: user.role,
+      organisationMode: payload.organisationMode
     }
   });
 
@@ -178,7 +180,7 @@ export const loginWithGoogle = async ({ credential }) => {
   return { user: safeUser, ...tokens };
 };
 
-export const completeGoogleProfile = async ({ credential, organisationJoinCode, role }) => {
+export const completeGoogleProfile = async ({ credential, organisationMode, organisationJoinCode, organisationName, industry, role }) => {
   const profile = await verifyGoogleCredential(credential);
   const existingUser = await prisma.user.findUnique({ where: { email: profile.email } });
 
@@ -192,7 +194,8 @@ export const completeGoogleProfile = async ({ credential, organisationJoinCode, 
     return { user: safeUser, ...tokens };
   }
 
-  const organisation = await getOrganisationByJoinCode(organisationJoinCode);
+  const organisation = await resolveSignupOrganisation({ organisationMode, organisationJoinCode, organisationName, industry });
+  const resolvedRole = organisationMode === "create" ? "SYSTEM_ADMINISTRATOR" : role;
 
   const user = await prisma.user.create({
     data: {
@@ -200,7 +203,7 @@ export const completeGoogleProfile = async ({ credential, organisationJoinCode, 
       name: profile.name ?? profile.email,
       email: profile.email,
       passwordHash: await hashPassword(crypto.randomBytes(48).toString("hex")),
-      role,
+      role: resolvedRole,
       isVerified: true,
       profileImageUrl: profile.picture
     }
@@ -215,7 +218,8 @@ export const completeGoogleProfile = async ({ credential, organisationJoinCode, 
     metadata: {
       name: user.name,
       email: user.email,
-      role: user.role
+      role: user.role,
+      organisationMode
     }
   });
 
@@ -427,6 +431,32 @@ export const resolveOrganisationJoinCode = async (joinCode) => {
   };
 };
 
+const resolveSignupOrganisation = async (payload) => {
+  if (payload.organisationMode === "create") {
+    return createOrganisationForSignup(payload);
+  }
+
+  return getOrganisationByJoinCode(payload.organisationJoinCode);
+};
+
+const createOrganisationForSignup = async ({ organisationName, industry }) => {
+  const name = organisationName?.trim();
+  if (!name) throw new AppError("Organisation name is required", 400, "ORGANISATION_NAME_REQUIRED");
+
+  return prisma.organisation.create({
+    data: {
+      name,
+      industry: industry?.trim() || "Drone operations",
+      joinCode: await generateOrganisationJoinCode()
+    },
+    select: {
+      id: true,
+      name: true,
+      industry: true
+    }
+  });
+};
+
 const getOrganisationByJoinCode = async (joinCode) => {
   const code = normaliseJoinCode(joinCode);
   if (!code) throw new AppError("Organisation code is required", 400, "ORGANISATION_JOIN_CODE_REQUIRED");
@@ -445,6 +475,16 @@ const getOrganisationByJoinCode = async (joinCode) => {
   }
 
   return organisation;
+};
+
+const generateOrganisationJoinCode = async () => {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const code = `ORG-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+    const existing = await prisma.organisation.findUnique({ where: { joinCode: code }, select: { id: true } });
+    if (!existing) return code;
+  }
+
+  return `ORG-${Date.now().toString().slice(-8)}`;
 };
 
 const normaliseJoinCode = (value = "") => value.toString().trim().toUpperCase().replace(/\s+/g, "");

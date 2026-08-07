@@ -199,7 +199,7 @@ export const reportStatusSchema = z.object({
 
 export const incidentCreateSchema = z.object({
   body: z.object({
-    incidentCode: z.string().min(2),
+    incidentCode: z.string().min(2).optional(),
     type: z.enum(["LOSS_OF_SIGNAL", "GEOFENCE_BREACH", "LOW_BATTERY", "COLLISION", "EMERGENCY_LANDING", "EQUIPMENT_FAILURE", "WEATHER_EVENT"]),
     title: z.string().min(2),
     severity: z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"]),

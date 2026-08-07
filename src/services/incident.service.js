@@ -15,10 +15,11 @@ export const listIncidents = (organisationId) => {
 };
 
 export const createIncident = async (organisationId, reportedById, data) => {
+  const incidentCode = data.incidentCode ?? await generateIncidentCode(organisationId);
   const incident = await prisma.incident.create({
     data: {
       organisationId,
-      incidentCode: data.incidentCode,
+      incidentCode,
       type: data.type,
       title: data.title,
       severity: data.severity,
@@ -59,4 +60,19 @@ export const deleteIncident = async (organisationId, id) => {
 
   await prisma.incident.delete({ where: { id } });
   return incident;
+};
+
+const generateIncidentCode = async (organisationId) => {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const count = await prisma.incident.count({ where: { organisationId } });
+    const candidate = `INC-${String(count + 1 + attempt).padStart(4, "0")}`;
+    const existing = await prisma.incident.findFirst({
+      where: { organisationId, incidentCode: candidate },
+      select: { id: true }
+    });
+
+    if (!existing) return candidate;
+  }
+
+  return `INC-${Date.now().toString().slice(-6)}`;
 };
