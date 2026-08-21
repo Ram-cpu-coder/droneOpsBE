@@ -187,7 +187,10 @@ export const reportCreateSchema = z.object({
 
 export const reportGenerateSchema = z.object({
   body: z.object({
-    type: z.enum(["FLIGHT_ACTIVITY", "INCIDENT", "MAINTENANCE", "COMPLIANCE", "UTILIZATION"]).optional()
+    type: z.enum(["FLIGHT_ACTIVITY", "INCIDENT", "MAINTENANCE", "COMPLIANCE", "UTILIZATION"]).optional(),
+    dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    limit: z.coerce.number().int().min(1).max(250).optional()
   }).optional(),
   params: z.object({}).optional(),
   query: z.object({}).optional()

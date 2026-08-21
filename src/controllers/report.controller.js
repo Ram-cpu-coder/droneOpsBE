@@ -61,41 +61,55 @@ export const summary = asyncHandler(async (req, res) => {
 
 export const generate = asyncHandler(async (req, res) => {
   const requestedType = String(req.validated.body?.type ?? "UTILIZATION").toUpperCase();
+  const scope = buildReportScope(req.validated.body ?? {});
+  const take = scope.limit;
 
   const [drones, missions, incidents, maintenance] = await Promise.all([
     prisma.drone.findMany({
-      where: { organisationId: req.user.organisationId },
+      where: {
+        organisationId: req.user.organisationId,
+        ...buildDateWhere("createdAt", scope)
+      },
       orderBy: { createdAt: "desc" },
-      take: 20
+      take
     }),
     prisma.mission.findMany({
-      where: { organisationId: req.user.organisationId },
+      where: {
+        organisationId: req.user.organisationId,
+        ...buildMissionDateWhere(scope)
+      },
       include: {
         drone: { select: { droneCode: true, model: true } },
         pilot: { select: { name: true } },
         riskAssessment: { select: { level: true } }
       },
       orderBy: { createdAt: "desc" },
-      take: 20
+      take
     }),
     prisma.incident.findMany({
-      where: { organisationId: req.user.organisationId },
+      where: {
+        organisationId: req.user.organisationId,
+        ...buildDateWhere("createdAt", scope)
+      },
       include: {
         assignedTo: { select: { name: true } },
         drone: { select: { droneCode: true } },
         mission: { select: { missionCode: true, name: true } }
       },
       orderBy: { createdAt: "desc" },
-      take: 20
+      take
     }),
     prisma.maintenanceRecord.findMany({
-      where: { organisationId: req.user.organisationId },
+      where: {
+        organisationId: req.user.organisationId,
+        ...buildMaintenanceDateWhere(scope)
+      },
       include: {
         drone: { select: { droneCode: true, model: true } },
         assignedTo: { select: { name: true } }
       },
       orderBy: { createdAt: "desc" },
-      take: 20
+      take
     })
   ]);
 
@@ -108,6 +122,7 @@ export const generate = asyncHandler(async (req, res) => {
 
   const snapshotByType = {
     FLIGHT_ACTIVITY: {
+      scope: buildSnapshotScope(scope, "Mission planned date"),
       summary: {
         value: `${missions.length} missions`,
         change: `${missions.filter((mission) => mission.status === "ACTIVE").length} active missions in current snapshot`,
@@ -119,12 +134,15 @@ export const generate = asyncHandler(async (req, res) => {
         name: mission.name,
         status: mission.status,
         progress: mission.progress,
+        plannedStartAt: mission.plannedStartAt,
+        plannedEndAt: mission.plannedEndAt,
         pilot: mission.pilot?.name,
         drone: mission.drone?.droneCode,
         risk: mission.riskAssessment?.level
       }))
     },
     INCIDENT: {
+      scope: buildSnapshotScope(scope, "Incident reported date"),
       summary: {
         value: `${incidents.length} incidents`,
         change: `${incidents.filter((incident) => ["HIGH", "CRITICAL"].includes(incident.severity)).length} high-severity incidents`,
@@ -138,10 +156,12 @@ export const generate = asyncHandler(async (req, res) => {
         severity: incident.severity,
         owner: incident.assignedTo?.name,
         drone: incident.drone?.droneCode,
-        mission: incident.mission?.missionCode ?? incident.mission?.name
+        mission: incident.mission?.missionCode ?? incident.mission?.name,
+        reportedAt: incident.createdAt
       }))
     },
     MAINTENANCE: {
+      scope: buildSnapshotScope(scope, "Maintenance due date"),
       summary: {
         value: `${maintenance.length} maintenance items`,
         change: `${maintenance.filter((record) => record.status === "OVERDUE").length} overdue items`,
@@ -158,6 +178,7 @@ export const generate = asyncHandler(async (req, res) => {
       }))
     },
     COMPLIANCE: {
+      scope: buildSnapshotScope(scope, "Compliance snapshot date"),
       summary: {
         value: `${summary.openIncidents} open issues`,
         change: `${summary.pendingMaintenance} maintenance items pending review`,
@@ -168,10 +189,14 @@ export const generate = asyncHandler(async (req, res) => {
         openIncidents: summary.openIncidents,
         pendingMaintenance: summary.pendingMaintenance,
         certifiedDrones: drones.filter((drone) => drone.certificationStatus === "CERTIFIED").length,
-        awaitingApproval: drones.filter((drone) => drone.certificationStatus === "AWAITING_APPROVAL").length
+        awaitingApproval: drones.filter((drone) => drone.certificationStatus === "AWAITING_APPROVAL").length,
+        includedDrones: drones.length,
+        includedIncidents: incidents.length,
+        includedMaintenance: maintenance.length
       }
     },
     UTILIZATION: {
+      scope: buildSnapshotScope(scope, "Fleet activity date"),
       summary: {
         value: `${summary.drones} drones`,
         change: `${summary.activeMissions} active missions across fleet`,
@@ -182,7 +207,8 @@ export const generate = asyncHandler(async (req, res) => {
         totalDrones: summary.drones,
         activeMissions: summary.activeMissions,
         inMissionDrones: drones.filter((drone) => drone.status === "IN_MISSION").length,
-        availableDrones: drones.filter((drone) => drone.status === "AVAILABLE").length
+        availableDrones: drones.filter((drone) => drone.status === "AVAILABLE").length,
+        includedMissions: missions.length
       }
     }
   };
@@ -218,11 +244,59 @@ export const generate = asyncHandler(async (req, res) => {
     entityId: report.id,
     metadata: {
       title: report.title,
-      type: report.type
+      type: report.type,
+      scope: snapshot.scope
     }
   });
 
   return created(res, report, "Report generated from live organisation data");
+});
+
+const buildReportScope = (body) => {
+  const dateFrom = body.dateFrom ? parseReportBoundary(body.dateFrom, "start") : null;
+  const dateTo = body.dateTo ? parseReportBoundary(body.dateTo, "end") : null;
+
+  if (dateFrom && dateTo && dateFrom > dateTo) {
+    throw new AppError("Report start date cannot be after the end date", 400, "INVALID_REPORT_SCOPE");
+  }
+
+  return {
+    dateFrom,
+    dateTo,
+    limit: Math.min(Math.max(Number(body.limit ?? 50), 1), 250)
+  };
+};
+
+const parseReportBoundary = (value, boundary) => {
+  const date = new Date(`${value}T${boundary === "end" ? "23:59:59.999" : "00:00:00.000"}Z`);
+  if (Number.isNaN(date.getTime())) {
+    throw new AppError("Invalid report date range", 400, "INVALID_REPORT_SCOPE");
+  }
+  return date;
+};
+
+const buildDateWhere = (fieldName, scope) => {
+  const range = {};
+  if (scope.dateFrom) range.gte = scope.dateFrom;
+  if (scope.dateTo) range.lte = scope.dateTo;
+  return Object.keys(range).length ? { [fieldName]: range } : {};
+};
+
+const buildMissionDateWhere = (scope) => {
+  const range = buildDateWhere("plannedStartAt", scope);
+  return Object.keys(range).length ? range : {};
+};
+
+const buildMaintenanceDateWhere = (scope) => {
+  const dueAtRange = buildDateWhere("dueAt", scope);
+  return Object.keys(dueAtRange).length ? dueAtRange : {};
+};
+
+const buildSnapshotScope = (scope, dateField) => ({
+  dateField,
+  dateFrom: scope.dateFrom?.toISOString() ?? null,
+  dateTo: scope.dateTo?.toISOString() ?? null,
+  limit: scope.limit
 });
 
 export const updateStatus = asyncHandler(async (req, res) => {
