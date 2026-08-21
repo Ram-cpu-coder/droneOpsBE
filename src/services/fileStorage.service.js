@@ -18,21 +18,33 @@ export const storeUploadedFile = async (file, context = {}) => {
     return uploadToCloudinary(file, context);
   }
 
-  return saveLocally(file);
+  return saveLocally(file, context);
 };
 
 const uploadToCloudinary = async (file, context) => {
   const folder = buildCloudinaryFolder(context);
-  const resourceType = file.mimetype.startsWith("image/") ? "image" : "raw";
+  const resourceType = file.mimetype.startsWith("image/")
+    ? "image"
+    : file.mimetype.startsWith("video/")
+      ? "video"
+      : "raw";
+  const originalFilename = toSafeFilename(file.originalname || "attachment");
+  const uploadOptions = {
+    folder,
+    resource_type: resourceType,
+    use_filename: true,
+    unique_filename: true,
+    filename_override: originalFilename
+  };
+
+  if (resourceType === "raw") {
+    uploadOptions.public_id = `${Date.now()}-${originalFilename}`;
+    uploadOptions.unique_filename = false;
+  }
 
   const result = await new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
-      {
-        folder,
-        resource_type: resourceType,
-        use_filename: true,
-        unique_filename: true
-      },
+      uploadOptions,
       (error, uploadResult) => {
         if (error) return reject(error);
         return resolve(uploadResult);
@@ -51,26 +63,52 @@ const uploadToCloudinary = async (file, context) => {
   };
 };
 
-const saveLocally = async (file) => {
-  const uploadRoot = path.resolve(env.uploadDir);
+const saveLocally = async (file, context) => {
+  const uploadRoot = path.resolve(env.uploadDir, ...buildStorageSegments(context));
   await fs.mkdir(uploadRoot, { recursive: true });
 
-  const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const safeName = toSafeFilename(file.originalname);
   const filename = `${Date.now()}-${safeName}`;
   const filepath = path.join(uploadRoot, filename);
 
   await fs.writeFile(filepath, file.buffer);
   const publicBaseUrl = env.apiPublicUrl.replace(/\/api\/v\d+\/?$/, "");
+  const publicPath = [...buildStorageSegments(context), filename].map(encodeURIComponent).join("/");
 
   return {
-    fileUrl: `${publicBaseUrl}/uploads/${filename}`,
+    fileUrl: `${publicBaseUrl}/uploads/${publicPath}`,
     storageProvider: "local",
-    publicId: filename,
+    publicId: publicPath,
     resourceType: file.mimetype,
     bytes: file.size
   };
 };
 
-const buildCloudinaryFolder = ({ organisationId, entityType }) => {
-  return ["droneops", organisationId, entityType].filter(Boolean).join("/");
+const buildCloudinaryFolder = (context) => {
+  return ["droneops", ...buildStorageSegments(context)].filter(Boolean).join("/");
 };
+
+const buildStorageSegments = ({ organisationId, entityType, entityCode, entityId, subfolder } = {}) => (
+  [organisationId, entityType, entityCode ?? entityId, subfolder]
+    .filter(Boolean)
+    .map(toSafeStorageSegment)
+);
+
+const toSafeStorageSegment = (value) => (
+  value
+    .toString()
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+);
+
+const toSafeFilename = (value = "attachment") => (
+  value
+    .toString()
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 160) || "attachment"
+);

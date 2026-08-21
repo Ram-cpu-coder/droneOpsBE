@@ -26,6 +26,35 @@ export const create = asyncHandler(async (req, res) => {
   return created(res, incident, "Incident logged");
 });
 
+export const evidence = asyncHandler(async (req, res) => {
+  const evidenceRecord = await incidentService.getIncidentEvidence(req.user.organisationId, req.params.id);
+  return ok(res, evidenceRecord);
+});
+
+export const uploadEvidence = asyncHandler(async (req, res) => {
+  const evidenceDocument = await incidentService.uploadIncidentEvidence(
+    req.user.organisationId,
+    req.user.id,
+    req.params.id,
+    req.file,
+    req.body
+  );
+  await writeAudit({
+    organisationId: req.user.organisationId,
+    actorId: req.user.id,
+    action: "INCIDENT_EVIDENCE_UPLOADED",
+    entityType: "INCIDENT",
+    entityId: req.params.id,
+    metadata: {
+      documentId: evidenceDocument.id,
+      title: evidenceDocument.title,
+      fileUrl: evidenceDocument.fileUrl,
+      evidenceType: evidenceDocument.metadata?.evidenceType
+    }
+  });
+  return created(res, evidenceDocument, "Incident evidence uploaded");
+});
+
 export const update = asyncHandler(async (req, res) => {
   const incident = await incidentService.updateIncident(req.user.organisationId, req.params.id, req.validated.body);
   await writeAudit({

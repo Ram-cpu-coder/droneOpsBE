@@ -6,6 +6,65 @@ const DEFAULT_WAYPOINT_RADIUS_METERS = 50;
 export const syncMissionProgressFromTelemetry = async (mission, telemetryRecord) => {
   if (!mission || mission.status !== "ACTIVE") return null;
 
+  if (telemetryRecord.status === "MISSION_COMPLETE") {
+    const plannedRoute = normalizeRouteContainer(mission.plannedRoute);
+    const waypoints = extractWaypoints(mission.plannedRoute);
+    const routeProgress = {
+      source: "TELEMETRY",
+      percent: 100,
+      reachedWaypointIndex: Math.max(waypoints.length - 1, 0),
+      reachedWaypoints: waypoints.length,
+      totalWaypoints: waypoints.length,
+      distanceAlongRouteMeters: plannedRoute.progress?.totalDistanceMeters ?? plannedRoute.totalDistanceMeters,
+      totalDistanceMeters: plannedRoute.progress?.totalDistanceMeters ?? plannedRoute.totalDistanceMeters,
+      distanceToRouteMeters: 0,
+      completedAt: telemetryRecord.timestamp,
+      lastTelemetryAt: telemetryRecord.timestamp
+    };
+
+    const updatedMission = await prisma.$transaction(async (tx) => {
+      const updated = await tx.mission.update({
+        where: { id: mission.id },
+        data: {
+          status: "COMPLETED",
+          progress: 100,
+          plannedRoute: {
+            ...plannedRoute,
+            progress: routeProgress
+          }
+        },
+        select: {
+          id: true,
+          missionCode: true,
+          progress: true,
+          status: true,
+          plannedRoute: true,
+          droneId: true
+        }
+      });
+
+      if (mission.droneId) {
+        await tx.drone.update({
+          where: { id: mission.droneId },
+          data: { status: "AVAILABLE" }
+        });
+      }
+
+      return updated;
+    });
+
+    return {
+      missionId: updatedMission.id,
+      missionCode: updatedMission.missionCode,
+      progress: updatedMission.progress,
+      status: updatedMission.status,
+      routeProgress,
+      source: "TELEMETRY",
+      updated: true,
+      completed: true
+    };
+  }
+
   const plannedRoute = normalizeRouteContainer(mission.plannedRoute);
   const waypoints = extractWaypoints(mission.plannedRoute);
   if (waypoints.length < 2) return null;

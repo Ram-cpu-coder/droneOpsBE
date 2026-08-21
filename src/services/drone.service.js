@@ -4,7 +4,9 @@ import { findDroneModel } from "./droneCatalog.service.js";
 
 const assignableStatuses = ["AVAILABLE"];
 
-export const listDrones = (organisationId) => {
+export const listDrones = async (organisationId) => {
+  await syncMissionDroneStatuses(organisationId);
+
   return prisma.drone.findMany({
     where: { organisationId },
     orderBy: { createdAt: "desc" }
@@ -108,6 +110,46 @@ export const ensureDroneExists = async (organisationId, id) => {
   const drone = await prisma.drone.findFirst({ where: { id, organisationId } });
   if (!drone) throw new AppError("Drone not found", 404, "DRONE_NOT_FOUND");
   return drone;
+};
+
+export const syncMissionDroneStatuses = async (organisationId) => {
+  const activeMissionDrones = await prisma.mission.findMany({
+    where: {
+      organisationId,
+      status: "ACTIVE"
+    },
+    select: {
+      droneId: true,
+      droneAssignments: { select: { droneId: true } }
+    }
+  });
+
+  const activeDroneIds = [...new Set(activeMissionDrones.flatMap((mission) => [
+    mission.droneId,
+    ...mission.droneAssignments.map((assignment) => assignment.droneId)
+  ]).filter(Boolean))];
+
+  if (activeDroneIds.length) {
+    await prisma.drone.updateMany({
+      where: {
+        organisationId,
+        id: { in: activeDroneIds },
+        status: "AVAILABLE"
+      },
+      data: { status: "IN_MISSION" }
+    });
+  }
+
+  await prisma.drone.updateMany({
+    where: {
+      organisationId,
+      status: "IN_MISSION",
+      ...(activeDroneIds.length ? { id: { notIn: activeDroneIds } } : {})
+    },
+    data: { status: "AVAILABLE" }
+  });
+
+  return activeDroneIds;
 };
 
 const resolveTelemetryProvider = (data) => {

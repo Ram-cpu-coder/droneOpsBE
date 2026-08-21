@@ -48,5 +48,11 @@ export const env = {
   cloudinaryApiSecret: process.env.CLOUDINARY_API_SECRET,
   connectorWorkerEnabled: process.env.CONNECTOR_WORKER_ENABLED === "true",
   connectorPollIntervalMs: Number(process.env.CONNECTOR_POLL_INTERVAL_MS ?? 5000),
-  genericTelemetryApiKey: process.env.GENERIC_TELEMETRY_API_KEY
+  genericTelemetryApiKey: process.env.GENERIC_TELEMETRY_API_KEY,
+  synctegralTelemetryEnabled: process.env.SYNCTEGRAL_TELEMETRY_ENABLED === "true",
+  synctegralCustomerKey: process.env.DRONEOPS_CUSTOMER_KEY?.trim(),
+  synctegralDroneId: process.env.SYNCTEGRAL_DRONE_ID ?? "SIM-001",
+  synctegralApiBaseUrl: process.env.SYNCTEGRAL_API_BASE_URL ?? "https://synctegral-droneops-api.onrender.com",
+  synctegralLatestUrl: process.env.SYNCTEGRAL_LATEST_URL ?? `${process.env.SYNCTEGRAL_API_BASE_URL ?? "https://synctegral-droneops-api.onrender.com"}/v1/drones/${process.env.SYNCTEGRAL_DRONE_ID ?? "SIM-001"}/latest`,
+  synctegralTelemetryPollIntervalMs: Number(process.env.SYNCTEGRAL_TELEMETRY_POLL_INTERVAL_MS ?? 3000)
 };

@@ -53,6 +53,7 @@ enum ConnectorStatus {
 enum MissionStatus {
   PLANNED
   APPROVED
+  RISK_ASSESSMENT_COMPLETED
   ACTIVE
   COMPLETED
   ABORTED
@@ -152,6 +153,10 @@ model Organisation {
   auditLogs   AuditLog[]
   alertSettings AlertSettings?
   notificationReads NotificationRead[]
+  missionDroneAssignments MissionDroneAssignment[]
+  missionPilotAssignments MissionPilotAssignment[]
+  incidentDroneLinks IncidentDroneLink[]
+  incidentAssigneeLinks IncidentAssigneeLink[]
 }
 
 model AlertSettings {
@@ -187,9 +192,11 @@ model User {
 
   organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
   pilotMissions Mission[] @relation("MissionPilot")
+  missionPilotAssignments MissionPilotAssignment[]
   createdMissions Mission[] @relation("MissionCreator")
   reportedIncidents Incident[] @relation("IncidentReporter")
   assignedIncidents Incident[] @relation("IncidentAssignee")
+  incidentAssigneeLinks IncidentAssigneeLink[]
   maintenanceRecords MaintenanceRecord[] @relation("MaintenanceAssignee")
   defects Defect[] @relation("DefectReporter")
   reports Report[]
@@ -228,11 +235,13 @@ model Drone {
 
   organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
   missions Mission[]
+  missionAssignments MissionDroneAssignment[]
   flightLogs FlightLog[]
   telemetryLogs TelemetryLog[]
   maintenanceRecords MaintenanceRecord[]
   defects Defect[]
   incidents Incident[]
+  incidentLinks IncidentDroneLink[]
 
   @@unique([organisationId, droneCode])
   @@index([organisationId, status])
@@ -284,11 +293,45 @@ model Mission {
   telemetryLogs TelemetryLog[]
   incidents Incident[]
   riskAssessment RiskAssessment?
+  droneAssignments MissionDroneAssignment[]
+  pilotAssignments MissionPilotAssignment[]
 
   @@unique([organisationId, missionCode])
   @@index([organisationId, status])
   @@index([createdById])
   @@index([droneId, pilotId])
+}
+
+model MissionDroneAssignment {
+  id             String   @id @default(uuid())
+  organisationId String
+  missionId      String
+  droneId        String
+  isPrimary      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  mission      Mission      @relation(fields: [missionId], references: [id], onDelete: Cascade)
+  drone        Drone        @relation(fields: [droneId], references: [id])
+
+  @@unique([missionId, droneId])
+  @@index([organisationId, droneId])
+}
+
+model MissionPilotAssignment {
+  id             String   @id @default(uuid())
+  organisationId String
+  missionId      String
+  pilotId        String
+  isPrimary      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  mission      Mission      @relation(fields: [missionId], references: [id], onDelete: Cascade)
+  pilot        User         @relation(fields: [pilotId], references: [id])
+
+  @@unique([missionId, pilotId])
+  @@index([organisationId, pilotId])
 }
 
 model FlightLog {
@@ -384,6 +427,7 @@ model Incident {
   location        String?
   source          String?
   details         String?
+  evidence        Json?
   rootCause       String?
   correctiveAction String?
   timeline        Json?
@@ -395,9 +439,43 @@ model Incident {
   mission Mission? @relation(fields: [missionId], references: [id])
   reportedBy User @relation("IncidentReporter", fields: [reportedById], references: [id])
   assignedTo User? @relation("IncidentAssignee", fields: [assignedToId], references: [id])
+  droneLinks IncidentDroneLink[]
+  assigneeLinks IncidentAssigneeLink[]
 
   @@unique([organisationId, incidentCode])
   @@index([organisationId, status, severity])
+}
+
+model IncidentDroneLink {
+  id             String   @id @default(uuid())
+  organisationId String
+  incidentId     String
+  droneId        String
+  isPrimary      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  incident     Incident     @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  drone        Drone        @relation(fields: [droneId], references: [id])
+
+  @@unique([incidentId, droneId])
+  @@index([organisationId, droneId])
+}
+
+model IncidentAssigneeLink {
+  id             String   @id @default(uuid())
+  organisationId String
+  incidentId     String
+  userId         String
+  isPrimary      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  incident     Incident     @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id])
+
+  @@unique([incidentId, userId])
+  @@index([organisationId, userId])
 }
 
 model TelemetryLog {

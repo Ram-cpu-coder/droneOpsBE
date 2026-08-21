@@ -9,4 +9,5 @@ export const telemetryRouter = Router();
 telemetryRouter.use(requireAuth);
 telemetryRouter.post("/", requirePermission("telemetry:read"), validate(telemetryCreateSchema), telemetryController.ingest);
 telemetryRouter.get("/live", requirePermission("telemetry:read"), telemetryController.latest);
+telemetryRouter.post("/synctegral/sync", requirePermission("telemetry:read"), telemetryController.syncSynctegral);
 telemetryRouter.get("/:droneId", requirePermission("telemetry:read"), telemetryController.byDrone);

@@ -121,14 +121,16 @@ export const missionCreateSchema = z.object({
     name: z.string().min(2),
     type: z.string().min(2),
     droneId: z.string().uuid().optional(),
+    droneIds: z.array(z.string().uuid()).min(1).optional(),
     pilotId: z.string().uuid().optional(),
+    pilotIds: z.array(z.string().uuid()).min(1).optional(),
     plannedRoute: z.unknown().optional(),
     geofenceConfig: z.unknown().optional(),
     launchSite: z.string().optional(),
     operatingArea: z.string().optional(),
     plannedStartAt: z.string().datetime().optional(),
     plannedEndAt: z.string().datetime().optional()
-  }).superRefine(validateMissionDates)),
+  }).superRefine(validateMissionAssignments).superRefine(validateMissionDates)),
   params: z.object({}).optional(),
   query: z.object({}).optional()
 });
@@ -138,9 +140,11 @@ export const missionUpdateSchema = z.object({
     missionCode: z.string().min(2).optional(),
     name: z.string().min(2).optional(),
     type: z.string().min(2).optional(),
-    status: z.enum(["PLANNED", "APPROVED", "ACTIVE", "COMPLETED", "ABORTED", "CANCELLED"]).optional(),
+    status: z.enum(["PLANNED", "APPROVED", "RISK_ASSESSMENT_COMPLETED", "ACTIVE", "COMPLETED", "ABORTED", "CANCELLED"]).optional(),
     droneId: z.string().uuid().optional(),
+    droneIds: z.array(z.string().uuid()).min(1).optional(),
     pilotId: z.string().uuid().optional(),
+    pilotIds: z.array(z.string().uuid()).min(1).optional(),
     plannedRoute: z.unknown().optional(),
     geofenceConfig: z.unknown().optional(),
     launchSite: z.string().optional(),
@@ -203,13 +207,15 @@ export const incidentCreateSchema = z.object({
     type: z.enum(["LOSS_OF_SIGNAL", "GEOFENCE_BREACH", "LOW_BATTERY", "COLLISION", "EMERGENCY_LANDING", "EQUIPMENT_FAILURE", "WEATHER_EVENT"]),
     title: z.string().min(2),
     severity: z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"]),
-    droneId: z.string().uuid(),
+    droneId: z.string().uuid().optional(),
+    droneIds: z.array(z.string().uuid()).min(1).optional(),
     missionId: z.string().uuid().optional(),
     assignedToId: z.string().uuid().optional(),
+    assignedToIds: z.array(z.string().uuid()).optional(),
     location: z.string().optional(),
     source: z.string().optional(),
     details: z.string().optional()
-  }),
+  }).superRefine(validateIncidentAssignments),
   params: z.object({}).optional(),
   query: z.object({}).optional()
 });
@@ -222,8 +228,10 @@ export const incidentUpdateSchema = z.object({
     severity: z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"]).optional(),
     status: z.enum(["OPEN", "UNDER_REVIEW", "INVESTIGATION", "CORRECTIVE_ACTION", "CLOSED"]).optional(),
     droneId: z.string().uuid().optional(),
+    droneIds: z.array(z.string().uuid()).min(1).optional(),
     missionId: z.string().uuid().optional(),
     assignedToId: z.string().uuid().optional(),
+    assignedToIds: z.array(z.string().uuid()).optional(),
     location: z.string().optional(),
     source: z.string().optional(),
     details: z.string().optional(),
@@ -313,6 +321,22 @@ function validateMissionDates(data, ctx) {
   }
 
   validateOperatingAreaCoverage(data, ctx);
+}
+
+function validateMissionAssignments(data, ctx) {
+  if (!data.droneId && !data.droneIds?.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["droneIds"], message: "At least one assigned drone is required" });
+  }
+
+  if (!data.pilotId && !data.pilotIds?.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["pilotIds"], message: "At least one remote pilot is required" });
+  }
+}
+
+function validateIncidentAssignments(data, ctx) {
+  if (!data.droneId && !data.droneIds?.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["droneIds"], message: "At least one affected drone is required" });
+  }
 }
 
 function validateOperatingAreaCoverage(data, ctx) {

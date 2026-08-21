@@ -1,14 +1,24 @@
 import { prisma } from "../config/prisma.js";
 import { AppError } from "../utils/AppError.js";
-import { ensureDroneAssignable } from "./drone.service.js";
+import { ensureDroneAssignable, syncMissionDroneStatuses } from "./drone.service.js";
 import { sendMissionApprovalRequestEmail, sendMissionApprovedEmail } from "./email.service.js";
 
-export const listMissions = (organisationId) => {
+export const listMissions = async (organisationId) => {
+  await syncMissionDroneStatuses(organisationId);
+
   return prisma.mission.findMany({
     where: { organisationId },
     include: {
       drone: { select: { id: true, droneCode: true, status: true } },
       pilot: { select: { id: true, name: true, role: true } },
+      droneAssignments: {
+        include: { drone: { select: { id: true, droneCode: true, model: true, manufacturer: true, status: true, batteryType: true } } },
+        orderBy: { createdAt: "asc" }
+      },
+      pilotAssignments: {
+        include: { pilot: { select: { id: true, name: true, email: true, role: true } } },
+        orderBy: { createdAt: "asc" }
+      },
       riskAssessment: true
     },
     orderBy: { createdAt: "desc" }
@@ -16,7 +26,13 @@ export const listMissions = (organisationId) => {
 };
 
 export const createMission = async (organisationId, data, actor) => {
-  if (data.droneId) await ensureDroneAssignable(organisationId, data.droneId);
+  const droneIds = normalizeAssignmentIds(data.droneId, data.droneIds);
+  const pilotIds = normalizeAssignmentIds(data.pilotId, data.pilotIds);
+  if (!droneIds.length) throw new AppError("Select at least one available drone before creating the mission", 400, "MISSION_DRONE_REQUIRED");
+  if (!pilotIds.length) throw new AppError("Select at least one verified remote pilot before creating the mission", 400, "MISSION_PILOT_REQUIRED");
+
+  await Promise.all(droneIds.map((droneId) => ensureDroneAssignable(organisationId, droneId)));
+  await Promise.all(pilotIds.map((pilotId) => ensurePilotAssignable(organisationId, pilotId)));
   const missionCode = data.missionCode ?? await generateMissionCode(organisationId);
 
   return prisma.mission.create({
@@ -27,14 +43,20 @@ export const createMission = async (organisationId, data, actor) => {
       type: data.type,
       status: isSystemAdministrator(actor.role) ? "APPROVED" : "PLANNED",
       createdById: actor.id,
-      droneId: data.droneId,
-      pilotId: data.pilotId,
+      droneId: droneIds[0],
+      pilotId: pilotIds[0],
       plannedRoute: data.plannedRoute,
       geofenceConfig: data.geofenceConfig,
       launchSite: data.launchSite,
       operatingArea: data.operatingArea,
       plannedStartAt: data.plannedStartAt ? new Date(data.plannedStartAt) : undefined,
-      plannedEndAt: data.plannedEndAt ? new Date(data.plannedEndAt) : undefined
+      plannedEndAt: data.plannedEndAt ? new Date(data.plannedEndAt) : undefined,
+      droneAssignments: {
+        create: droneIds.map((droneId, index) => ({ organisationId, droneId, isPrimary: index === 0 }))
+      },
+      pilotAssignments: {
+        create: pilotIds.map((pilotId, index) => ({ organisationId, pilotId, isPrimary: index === 0 }))
+      }
     }
   });
 };
@@ -75,12 +97,39 @@ export const notifyMissionApprovalRequired = async ({ organisationId, mission, r
 };
 
 export const updateMission = async (organisationId, id, data, actorRole) => {
-  const mission = await ensureMissionExists(organisationId, id);
+  const mission = await prisma.mission.findFirst({
+    where: { id, organisationId },
+    include: { droneAssignments: true, pilotAssignments: true }
+  });
+  if (!mission) throw new AppError("Mission not found", 404, "MISSION_NOT_FOUND");
   const normalizedData = normalizeMissionInput(data);
+  const hasDroneAssignments = data.droneId !== undefined || data.droneIds !== undefined;
+  const hasPilotAssignments = data.pilotId !== undefined || data.pilotIds !== undefined;
+  const nextDroneIds = hasDroneAssignments
+    ? normalizeAssignmentIds(data.droneId, data.droneIds)
+    : assignedDroneIds(mission);
+  const nextPilotIds = hasPilotAssignments
+    ? normalizeAssignmentIds(data.pilotId, data.pilotIds)
+    : assignedPilotIds(mission);
+
+  delete normalizedData.droneIds;
+  delete normalizedData.pilotIds;
+  if (hasDroneAssignments) normalizedData.droneId = nextDroneIds[0] ?? null;
+  if (hasPilotAssignments) normalizedData.pilotId = nextPilotIds[0] ?? null;
+
   validateMissionSchedule({ ...mission, ...normalizedData });
 
-  if (normalizedData.droneId && normalizedData.droneId !== mission.droneId) {
-    await ensureDroneAssignable(organisationId, normalizedData.droneId);
+  if (hasDroneAssignments) {
+    if (!nextDroneIds.length) throw new AppError("Select at least one available drone before saving the mission", 400, "MISSION_DRONE_REQUIRED");
+    const currentDroneIds = assignedDroneIds(mission);
+    await Promise.all(nextDroneIds.map((droneId) => (
+      currentDroneIds.includes(droneId) ? prisma.drone.findFirst({ where: { id: droneId, organisationId } }) : ensureDroneAssignable(organisationId, droneId)
+    )));
+  }
+
+  if (hasPilotAssignments) {
+    if (!nextPilotIds.length) throw new AppError("Select at least one verified remote pilot before saving the mission", 400, "MISSION_PILOT_REQUIRED");
+    await Promise.all(nextPilotIds.map((pilotId) => ensurePilotAssignable(organisationId, pilotId)));
   }
 
   if (normalizedData.status && normalizedData.status !== mission.status && !isSystemAdministrator(actorRole)) {
@@ -93,8 +142,24 @@ export const updateMission = async (organisationId, id, data, actorRole) => {
       data: normalizedData
     });
 
+    if (hasDroneAssignments) {
+      await tx.missionDroneAssignment.deleteMany({ where: { missionId: id } });
+      await tx.missionDroneAssignment.createMany({
+        data: nextDroneIds.map((droneId, index) => ({ organisationId, missionId: id, droneId, isPrimary: index === 0 })),
+        skipDuplicates: true
+      });
+    }
+
+    if (hasPilotAssignments) {
+      await tx.missionPilotAssignment.deleteMany({ where: { missionId: id } });
+      await tx.missionPilotAssignment.createMany({
+        data: nextPilotIds.map((pilotId, index) => ({ organisationId, missionId: id, pilotId, isPrimary: index === 0 })),
+        skipDuplicates: true
+      });
+    }
+
     if (normalizedData.status && normalizedData.status !== mission.status) {
-      await syncMissionDroneStatus(tx, mission, updatedMission.status, updatedMission.droneId);
+      await syncMissionDroneStatus(tx, { ...mission, droneAssignments: nextDroneIds.map((droneId) => ({ droneId })) }, updatedMission.status, updatedMission.droneId);
     }
 
     return updatedMission;
@@ -141,40 +206,66 @@ export const notifyMissionApproved = async ({ mission, approver }) => {
 };
 
 export const saveRiskAssessment = async (organisationId, missionId, data, actorId) => {
-  await ensureMissionExists(organisationId, missionId);
+  const mission = await ensureMissionExists(organisationId, missionId);
 
-  return prisma.riskAssessment.upsert({
-    where: { missionId },
-    create: {
-      organisationId,
-      missionId,
-      level: data.level,
-      hazards: data.hazards,
-      mitigations: data.mitigations,
-      approvedById: actorId,
-      approvedAt: new Date()
-    },
-    update: {
-      level: data.level,
-      hazards: data.hazards,
-      mitigations: data.mitigations,
-      approvedById: actorId,
-      approvedAt: new Date()
+  if (!["APPROVED", "RISK_ASSESSMENT_COMPLETED"].includes(mission.status)) {
+    throw new AppError("Risk assessment can only be completed after mission approval", 409, "INVALID_MISSION_RISK_STATUS");
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const assessment = await tx.riskAssessment.upsert({
+      where: { missionId },
+      create: {
+        organisationId,
+        missionId,
+        level: data.level,
+        hazards: data.hazards,
+        mitigations: data.mitigations,
+        approvedById: actorId,
+        approvedAt: new Date()
+      },
+      update: {
+        level: data.level,
+        hazards: data.hazards,
+        mitigations: data.mitigations,
+        approvedById: actorId,
+        approvedAt: new Date()
+      }
+    });
+
+    if (mission.status === "APPROVED") {
+      await tx.mission.update({
+        where: { id: missionId },
+        data: { status: "RISK_ASSESSMENT_COMPLETED" }
+      });
     }
+
+    return assessment;
   });
 };
 
 export const startMission = async (organisationId, id) => {
   const mission = await prisma.mission.findFirst({
     where: { id, organisationId },
-    include: { riskAssessment: true, drone: true, pilot: true }
+    include: {
+      riskAssessment: true,
+      drone: true,
+      pilot: true,
+      droneAssignments: { include: { drone: true } },
+      pilotAssignments: { include: { pilot: true } }
+    }
   });
   if (!mission) throw new AppError("Mission not found", 404, "MISSION_NOT_FOUND");
-  if (!mission.droneId || !mission.pilotId) throw new AppError("Mission requires drone and pilot assignment", 409, "MISSION_ASSIGNMENT_REQUIRED");
+  const droneIds = assignedDroneIds(mission);
+  const pilotIds = assignedPilotIds(mission);
+  if (!droneIds.length || !pilotIds.length) throw new AppError("Mission requires drone and pilot assignment", 409, "MISSION_ASSIGNMENT_REQUIRED");
   if (!mission.riskAssessment) throw new AppError("Risk assessment required before activation", 409, "RISK_ASSESSMENT_REQUIRED");
   if (mission.status === "PLANNED") throw new AppError("Mission is awaiting system administrator approval", 409, "MISSION_APPROVAL_REQUIRED");
-  if (mission.status !== "APPROVED") throw new AppError("Mission cannot be started from current status", 409, "INVALID_MISSION_STATUS");
-  if (mission.drone?.telemetryProvider && mission.drone.telemetryProvider !== "NONE" && !mission.drone.externalDeviceId) {
+  if (mission.status !== "RISK_ASSESSMENT_COMPLETED") throw new AppError("Mission cannot be started until risk assessment is completed", 409, "INVALID_MISSION_STATUS");
+  const connectorDroneMissingId = mission.droneAssignments
+    .map((assignment) => assignment.drone)
+    .find((drone) => drone?.telemetryProvider && drone.telemetryProvider !== "NONE" && !drone.externalDeviceId);
+  if (connectorDroneMissingId) {
     throw new AppError("Drone external device ID is required for live telemetry connector", 409, "DRONE_CONNECTOR_ID_REQUIRED");
   }
 
@@ -184,29 +275,32 @@ export const startMission = async (organisationId, id) => {
       data: { status: "ACTIVE", progress: mission.progress }
     });
 
-    if (mission.droneId) {
-      await tx.drone.update({
-        where: { id: mission.droneId },
-        data: { status: "IN_MISSION" }
-      });
-    }
+    await tx.drone.updateMany({
+      where: { organisationId, id: { in: droneIds } },
+      data: { status: "IN_MISSION" }
+    });
 
     return updatedMission;
   });
 };
 
 export const completeMission = async (organisationId, id) => {
-  const mission = await ensureMissionExists(organisationId, id);
+  const mission = await prisma.mission.findFirst({
+    where: { id, organisationId },
+    include: { droneAssignments: true }
+  });
+  if (!mission) throw new AppError("Mission not found", 404, "MISSION_NOT_FOUND");
   if (mission.status !== "ACTIVE") {
     throw new AppError("Only active missions can be completed", 409, "INVALID_MISSION_STATUS");
   }
+  const droneIds = assignedDroneIds(mission);
   return prisma.$transaction(async (tx) => {
     const updated = await tx.mission.update({
       where: { id },
       data: { status: "COMPLETED", progress: 100 }
     });
-    if (mission.droneId) {
-      await tx.drone.update({ where: { id: mission.droneId }, data: { status: "AVAILABLE" } });
+    if (droneIds.length) {
+      await tx.drone.updateMany({ where: { organisationId, id: { in: droneIds } }, data: { status: "AVAILABLE" } });
     }
     return updated;
   });
@@ -218,11 +312,47 @@ export const ensureMissionExists = async (organisationId, id) => {
   return mission;
 };
 
+const ensurePilotAssignable = async (organisationId, pilotId) => {
+  const pilot = await prisma.user.findFirst({
+    where: {
+      id: pilotId,
+      organisationId,
+      role: { in: ["REMOTE_PILOT", "OPERATIONS_MANAGER", "SYSTEM_ADMINISTRATOR"] },
+      isVerified: true
+    },
+    select: {
+      id: true,
+      name: true,
+      role: true
+    }
+  });
+
+  if (!pilot) {
+    throw new AppError("Select a verified remote pilot before creating the mission", 400, "MISSION_PILOT_REQUIRED");
+  }
+
+  return pilot;
+};
+
 const normalizeMissionInput = (data = {}) => ({
   ...data,
   plannedStartAt: data.plannedStartAt ? new Date(data.plannedStartAt) : undefined,
   plannedEndAt: data.plannedEndAt ? new Date(data.plannedEndAt) : undefined
 });
+
+const normalizeAssignmentIds = (primaryId, ids = []) => (
+  [...new Set([primaryId, ...(Array.isArray(ids) ? ids : [])].filter(Boolean))]
+);
+
+const assignedDroneIds = (mission) => normalizeAssignmentIds(
+  mission.droneId,
+  mission.droneAssignments?.map((assignment) => assignment.droneId)
+);
+
+const assignedPilotIds = (mission) => normalizeAssignmentIds(
+  mission.pilotId,
+  mission.pilotAssignments?.map((assignment) => assignment.pilotId)
+);
 
 const validateMissionSchedule = (mission) => {
   const plannedStartAt = mission.plannedStartAt ? new Date(mission.plannedStartAt) : null;
@@ -234,21 +364,21 @@ const validateMissionSchedule = (mission) => {
 };
 
 const syncMissionDroneStatus = async (tx, mission, nextStatus, nextDroneId) => {
-  const targetDroneId = nextDroneId ?? mission.droneId;
+  const targetDroneIds = normalizeAssignmentIds(nextDroneId ?? mission.droneId, mission.droneAssignments?.map((assignment) => assignment.droneId));
 
-  if (!targetDroneId) return;
+  if (!targetDroneIds.length) return;
 
   if (["COMPLETED", "ABORTED", "CANCELLED"].includes(nextStatus)) {
-    await tx.drone.update({
-      where: { id: targetDroneId },
+    await tx.drone.updateMany({
+      where: { id: { in: targetDroneIds } },
       data: { status: "AVAILABLE" }
     });
     return;
   }
 
   if (nextStatus === "ACTIVE") {
-    await tx.drone.update({
-      where: { id: targetDroneId },
+    await tx.drone.updateMany({
+      where: { id: { in: targetDroneIds } },
       data: { status: "IN_MISSION" }
     });
   }
