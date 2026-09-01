@@ -50,7 +50,6 @@ export const listNotifications = async (user, filters = {}) => {
         select: {
           id: true,
           name: true,
-          email: true,
           role: true
         }
       },
@@ -63,13 +62,16 @@ export const listNotifications = async (user, filters = {}) => {
     take: limit
   });
 
-  const unreadCount = await prisma.auditLog.count({
+  const unreadRows = await prisma.auditLog.findMany({
     where: {
       ...where,
       notificationReads: {
         none: { userId: user.id }
       }
-    }
+    },
+    select: { id: true },
+    orderBy: { createdAt: "desc" },
+    take: 100
   });
 
   return {
@@ -81,7 +83,7 @@ export const listNotifications = async (user, filters = {}) => {
         readAt
       };
     }),
-    unreadCount
+    unreadCount: unreadRows.length
   };
 };
 

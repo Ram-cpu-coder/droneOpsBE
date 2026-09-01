@@ -180,10 +180,13 @@ model User {
   role             UserRole
   profileImageUrl  String?
   isVerified       Boolean   @default(false)
-  verificationToken String?
-  pendingEmail      String?
-  emailChangeToken  String?
-  resetToken       String?
+  verificationToken          String?
+  verificationTokenExpiresAt DateTime?
+  pendingEmail               String?
+  emailChangeToken           String?
+  emailChangeTokenExpiresAt  DateTime?
+  resetToken                 String?
+  resetTokenExpiresAt        DateTime?
   passwordResetRequestedAt DateTime?
   refreshTokenHash String?
   lastLoginAt      DateTime?
@@ -282,6 +285,10 @@ model Mission {
   plannedStartAt  DateTime?
   plannedEndAt    DateTime?
   progress        Int           @default(0)
+  synctegralMissionId String?
+  synctegralSyncStatus String?
+  synctegralSyncError String?
+  synctegralSyncedAt DateTime?
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
@@ -298,6 +305,7 @@ model Mission {
 
   @@unique([organisationId, missionCode])
   @@index([organisationId, status])
+  @@index([organisationId, synctegralMissionId])
   @@index([createdById])
   @@index([droneId, pilotId])
 }
@@ -500,6 +508,8 @@ model TelemetryLog {
   drone Drone @relation(fields: [droneId], references: [id])
   mission Mission? @relation(fields: [missionId], references: [id])
 
+  @@index([organisationId, droneId, timestamp])
+  @@index([organisationId, missionId, timestamp])
   @@index([droneId, timestamp])
   @@index([missionId, timestamp])
 }
@@ -570,6 +580,7 @@ model AuditLog {
   notificationReads NotificationRead[]
 
   @@index([organisationId, entityType, entityId])
+  @@index([organisationId, entityType, createdAt])
   @@index([organisationId, createdAt])
 }
 

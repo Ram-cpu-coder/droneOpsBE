@@ -2,7 +2,7 @@ import http from "node:http";
 import { createApp } from "./app.js";
 import { env } from "./config/env.js";
 import { disconnectPrisma } from "./config/prisma.js";
-import { startSynctegralTelemetrySync, stopSynctegralTelemetrySync } from "./services/synctegralTelemetry.service.js";
+import { startSynctegralTelemetryStream, startSynctegralTelemetrySync, stopSynctegralTelemetrySync } from "./services/synctegralTelemetry.service.js";
 import { attachSocketServer } from "./sockets/index.js";
 
 const app = createApp();
@@ -13,6 +13,7 @@ attachSocketServer(server);
 server.listen(env.port, () => {
   console.log(`DroneOps API running on http://localhost:${env.port}${env.apiPrefix}`);
   startSynctegralTelemetrySync();
+  startSynctegralTelemetryStream();
 });
 
 const shutdown = async (signal) => {

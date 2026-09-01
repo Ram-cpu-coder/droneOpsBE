@@ -9,6 +9,7 @@ export const reportRouter = Router();
 reportRouter.use(requireAuth);
 reportRouter.get("/", requirePermission("reports:read"), reportController.list);
 reportRouter.get("/summary", requirePermission("reports:read"), reportController.summary);
+reportRouter.post("/generate/preview", requirePermission("reports:manage"), validate(reportGenerateSchema), reportController.previewGenerate);
 reportRouter.post("/generate", requirePermission("reports:manage"), validate(reportGenerateSchema), reportController.generate);
 reportRouter.post("/", requirePermission("reports:manage"), validate(reportCreateSchema), reportController.create);
 reportRouter.put("/:id/status", requirePermission("reports:manage"), validate(reportStatusSchema), reportController.updateStatus);

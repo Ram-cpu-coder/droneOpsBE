@@ -4,6 +4,8 @@ import { writeAudit } from "./audit.service.js";
 import { AppError } from "../utils/AppError.js";
 import { createOneTimeToken } from "../utils/oneTimeTokens.js";
 
+const EMAIL_CHANGE_TTL_MS = 30 * 60 * 1000;
+
 export const userSelect = {
   id: true,
   organisation: {
@@ -48,6 +50,7 @@ export const updateOwnProfile = async ({ actor, payload }) => {
   if (emailChange) {
     data.pendingEmail = emailChange.pendingEmail;
     data.emailChangeToken = emailChange.tokenHash;
+    data.emailChangeTokenExpiresAt = new Date(Date.now() + EMAIL_CHANGE_TTL_MS);
   }
 
   const updatedUser = await prisma.user.update({

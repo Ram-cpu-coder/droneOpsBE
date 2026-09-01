@@ -9,7 +9,6 @@ export const ingest = asyncHandler(async (req, res) => {
 });
 
 export const latest = asyncHandler(async (req, res) => {
-  await synctegralTelemetryService.syncSynctegralTelemetryForOrganisation(req.user.organisationId).catch(() => null);
   const result = await telemetryService.getLatestTelemetry(req.user.organisationId);
   return ok(res, result, "Latest live telemetry");
 });

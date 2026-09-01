@@ -3,6 +3,8 @@ import { AppError } from "../utils/AppError.js";
 import { findDroneModel } from "./droneCatalog.service.js";
 
 const assignableStatuses = ["AVAILABLE"];
+const DRONE_STATUS_SYNC_TTL_MS = 5000;
+const droneStatusSyncState = new Map();
 
 export const listDrones = async (organisationId) => {
   await syncMissionDroneStatuses(organisationId);
@@ -23,6 +25,10 @@ export const createDrone = async (organisationId, data) => {
     ? data.telemetryProvider
     : catalogModel.telemetryProvider;
   const droneCode = data.droneCode || await generateDroneCode(organisationId);
+  const externalDeviceId = telemetryProvider === "NONE" ? null : data.externalDeviceId;
+
+  validateDroneUpdateState({ ...data, telemetryProvider, externalDeviceId });
+  await ensureExternalDeviceIdAvailable(organisationId, externalDeviceId, telemetryProvider);
 
   return prisma.drone.create({
     data: {
@@ -44,9 +50,9 @@ export const createDrone = async (organisationId, data) => {
       certificationExpiry: data.certificationExpiry ? new Date(data.certificationExpiry) : undefined,
       remoteId: data.remoteId,
       telemetryProvider,
-      externalDeviceId: data.externalDeviceId,
+      externalDeviceId,
       connectorConfig: data.connectorConfig,
-      connectorStatus: telemetryProvider !== "NONE" && data.externalDeviceId ? "CONFIGURED" : "NOT_CONFIGURED"
+      connectorStatus: telemetryProvider !== "NONE" && externalDeviceId ? "CONFIGURED" : "NOT_CONFIGURED"
     }
   });
 };
@@ -72,7 +78,20 @@ export const updateDrone = async (organisationId, id, data) => {
     }
   }
 
-  validateDroneUpdateState({ ...currentDrone, ...updateData });
+  const mergedDrone = { ...currentDrone, ...updateData };
+  if (mergedDrone.telemetryProvider === "NONE") {
+    updateData.externalDeviceId = null;
+    mergedDrone.externalDeviceId = null;
+  }
+
+  validateDroneUpdateState(mergedDrone);
+  await ensureExternalDeviceIdAvailable(organisationId, mergedDrone.externalDeviceId, mergedDrone.telemetryProvider, id);
+
+  if ("telemetryProvider" in updateData || "externalDeviceId" in updateData) {
+    updateData.connectorStatus = mergedDrone.telemetryProvider !== "NONE" && mergedDrone.externalDeviceId
+      ? "CONFIGURED"
+      : "NOT_CONFIGURED";
+  }
 
   return prisma.drone.update({ where: { id }, data: updateData });
 };
@@ -112,7 +131,41 @@ export const ensureDroneExists = async (organisationId, id) => {
   return drone;
 };
 
-export const syncMissionDroneStatuses = async (organisationId) => {
+export const syncMissionDroneStatuses = async (organisationId, options = {}) => {
+  const state = droneStatusSyncState.get(organisationId);
+  const now = Date.now();
+
+  if (!options.force) {
+    if (state?.promise) return state.promise;
+    if (state?.lastSyncedAt && now - state.lastSyncedAt < DRONE_STATUS_SYNC_TTL_MS) {
+      return state.activeDroneIds ?? [];
+    }
+  }
+
+  const syncPromise = syncMissionDroneStatusesNow(organisationId)
+    .then((activeDroneIds) => {
+      droneStatusSyncState.set(organisationId, {
+        activeDroneIds,
+        lastSyncedAt: Date.now(),
+        promise: null
+      });
+      return activeDroneIds;
+    })
+    .catch((error) => {
+      droneStatusSyncState.delete(organisationId);
+      throw error;
+    });
+
+  droneStatusSyncState.set(organisationId, {
+    activeDroneIds: state?.activeDroneIds ?? [],
+    lastSyncedAt: state?.lastSyncedAt ?? 0,
+    promise: syncPromise
+  });
+
+  return syncPromise;
+};
+
+const syncMissionDroneStatusesNow = async (organisationId) => {
   const activeMissionDrones = await prisma.mission.findMany({
     where: {
       organisationId,
@@ -235,6 +288,30 @@ const validateDroneUpdateState = (drone) => {
 
   if (drone.telemetryProvider && drone.telemetryProvider !== "NONE" && !drone.externalDeviceId) {
     throw new AppError("Vendor drone/device ID is required when a telemetry connector is selected", 400, "INVALID_DRONE_TELEMETRY");
+  }
+};
+
+const ensureExternalDeviceIdAvailable = async (organisationId, externalDeviceId, telemetryProvider, currentDroneId = null) => {
+  if (!externalDeviceId || !telemetryProvider || telemetryProvider === "NONE") return;
+
+  const existing = await prisma.drone.findFirst({
+    where: {
+      externalDeviceId,
+      telemetryProvider: { not: "NONE" },
+      ...(currentDroneId ? { id: { not: currentDroneId } } : {})
+    },
+    select: { droneCode: true, organisationId: true }
+  });
+
+  if (existing) {
+    const sameOrganisation = existing.organisationId === organisationId;
+    throw new AppError(
+      sameOrganisation
+        ? `External device ID ${externalDeviceId} is already connected to ${existing.droneCode}`
+        : "External device ID is already connected to another DroneOps organisation",
+      409,
+      "DUPLICATE_EXTERNAL_DEVICE_ID"
+    );
   }
 };
 

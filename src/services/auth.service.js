@@ -8,7 +8,7 @@ import { storeUploadedFile } from "./fileStorage.service.js";
 import { writeAudit } from "./audit.service.js";
 import { comparePassword, hashPassword } from "../utils/passwords.js";
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from "../utils/tokens.js";
-import { hashOneTimeToken } from "../utils/oneTimeTokens.js";
+import { createOneTimeToken, hashOneTimeToken } from "../utils/oneTimeTokens.js";
 
 const publicUserSelect = {
   id: true,
@@ -31,7 +31,7 @@ const publicUserSelect = {
 const issueTokens = async (user) => {
   const accessToken = signAccessToken(user);
   const refreshToken = signRefreshToken(user);
-  const refreshTokenHash = await hashPassword(refreshToken);
+  const refreshTokenHash = hashOneTimeToken(refreshToken);
 
   await prisma.user.update({
     where: { id: user.id },
@@ -41,8 +41,27 @@ const issueTokens = async (user) => {
   return { accessToken, refreshToken };
 };
 
+const isRefreshTokenHashValid = async (refreshToken, storedHash) => {
+  if (!storedHash) return false;
+
+  if (storedHash.startsWith("$2")) {
+    return comparePassword(refreshToken, storedHash);
+  }
+
+  const candidateHash = hashOneTimeToken(refreshToken);
+  const candidate = Buffer.from(candidateHash);
+  const stored = Buffer.from(storedHash);
+
+  return candidate.length === stored.length && crypto.timingSafeEqual(candidate, stored);
+};
+
 const googleClient = env.googleClientId ? new OAuth2Client(env.googleClientId) : null;
 const PASSWORD_RESET_COOLDOWN_MS = 2 * 60 * 1000;
+const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
+const EMAIL_CHANGE_TTL_MS = 30 * 60 * 1000;
+const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
+
+const expiresFromNow = (ttlMs) => new Date(Date.now() + ttlMs);
 
 const verifyGoogleCredential = async (credential) => {
   if (!googleClient || !env.googleClientId) {
@@ -72,7 +91,7 @@ export const signup = async (payload) => {
   const existing = await prisma.user.findUnique({ where: { email: payload.email } });
   if (existing) throw new AppError("Email is already registered", 409, "EMAIL_EXISTS");
 
-  const verificationToken = crypto.randomBytes(32).toString("hex");
+  const { token: verificationToken, tokenHash: verificationTokenHash } = createOneTimeToken();
   const passwordHash = await hashPassword(payload.password);
   const organisation = await resolveSignupOrganisation(payload);
   const role = payload.organisationMode === "create" ? "SYSTEM_ADMINISTRATOR" : payload.role;
@@ -85,7 +104,8 @@ export const signup = async (payload) => {
       passwordHash,
       role,
       profileImageUrl: payload.profileImageUrl,
-      verificationToken
+      verificationToken: verificationTokenHash,
+      verificationTokenExpiresAt: expiresFromNow(EMAIL_VERIFICATION_TTL_MS)
     },
     select: publicUserSelect
   });
@@ -229,12 +249,15 @@ export const completeGoogleProfile = async ({ credential, organisationMode, orga
 };
 
 export const verifyEmail = async (token) => {
-  const user = await prisma.user.findFirst({ where: { verificationToken: token } });
+  const user = await prisma.user.findFirst({ where: { verificationToken: hashOneTimeToken(token) } });
   if (!user) throw new AppError("Invalid verification token", 400, "INVALID_VERIFICATION_TOKEN");
+  if (!user.verificationTokenExpiresAt || user.verificationTokenExpiresAt < new Date()) {
+    throw new AppError("Email verification link has expired", 400, "VERIFICATION_TOKEN_EXPIRED");
+  }
 
   const verifiedUser = await prisma.user.update({
     where: { id: user.id },
-    data: { isVerified: true, verificationToken: null },
+    data: { isVerified: true, verificationToken: null, verificationTokenExpiresAt: null },
     select: publicUserSelect
   });
 
@@ -260,11 +283,15 @@ export const verifyEmailChange = async (token) => {
     where: { emailChangeToken },
     select: {
       ...publicUserSelect,
-      pendingEmail: true
+      pendingEmail: true,
+      emailChangeTokenExpiresAt: true
     }
   });
 
   if (!user?.pendingEmail) throw new AppError("Invalid email change token", 400, "INVALID_EMAIL_CHANGE_TOKEN");
+  if (!user.emailChangeTokenExpiresAt || user.emailChangeTokenExpiresAt < new Date()) {
+    throw new AppError("Email change link has expired", 400, "EMAIL_CHANGE_TOKEN_EXPIRED");
+  }
 
   const existingEmail = await prisma.user.findUnique({
     where: { email: user.pendingEmail },
@@ -280,6 +307,7 @@ export const verifyEmailChange = async (token) => {
       email: user.pendingEmail,
       pendingEmail: null,
       emailChangeToken: null,
+      emailChangeTokenExpiresAt: null,
       isVerified: true,
       // Existing refresh tokens are invalidated so future sessions must use the new email identity.
       refreshTokenHash: null
@@ -341,6 +369,7 @@ export const requestPasswordReset = async ({ email }) => {
     where: { id: user.id },
     data: {
       resetToken: resetTokenHash,
+      resetTokenExpiresAt: expiresFromNow(PASSWORD_RESET_TTL_MS),
       passwordResetRequestedAt: new Date()
     }
   });
@@ -365,6 +394,9 @@ export const resetPassword = async ({ token, password }) => {
   const resetTokenHash = hashOneTimeToken(token);
   const user = await prisma.user.findFirst({ where: { resetToken: resetTokenHash } });
   if (!user) throw new AppError("Invalid or expired reset link", 400, "INVALID_RESET_TOKEN");
+  if (!user.resetTokenExpiresAt || user.resetTokenExpiresAt < new Date()) {
+    throw new AppError("Invalid or expired reset link", 400, "INVALID_RESET_TOKEN");
+  }
 
   const isSamePassword = await comparePassword(password, user.passwordHash);
   if (isSamePassword) {
@@ -378,6 +410,7 @@ export const resetPassword = async ({ token, password }) => {
     data: {
       passwordHash,
       resetToken: null,
+      resetTokenExpiresAt: null,
       passwordResetRequestedAt: null,
       refreshTokenHash: null
     }
@@ -406,8 +439,14 @@ export const refreshSession = async (refreshToken) => {
   const user = await prisma.user.findUnique({ where: { id: payload.sub } });
   if (!user?.refreshTokenHash) throw new AppError("Invalid refresh token", 401, "INVALID_REFRESH_TOKEN");
 
-  const isValid = await comparePassword(refreshToken, user.refreshTokenHash);
-  if (!isValid) throw new AppError("Invalid refresh token", 401, "INVALID_REFRESH_TOKEN");
+  const isValid = await isRefreshTokenHashValid(refreshToken, user.refreshTokenHash);
+  if (!isValid) {
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { refreshTokenHash: null }
+    });
+    throw new AppError("Invalid refresh token", 401, "INVALID_REFRESH_TOKEN");
+  }
 
   const tokens = await issueTokens(user);
   const safeUser = await prisma.user.findUnique({ where: { id: user.id }, select: publicUserSelect });
@@ -479,7 +518,7 @@ const getOrganisationByJoinCode = async (joinCode) => {
 
 const generateOrganisationJoinCode = async () => {
   for (let attempt = 0; attempt < 10; attempt += 1) {
-    const code = `ORG-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+    const code = `ORG-${crypto.randomBytes(8).toString("hex").toUpperCase()}`;
     const existing = await prisma.organisation.findUnique({ where: { joinCode: code }, select: { id: true } });
     if (!existing) return code;
   }

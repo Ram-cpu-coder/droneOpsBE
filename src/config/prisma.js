@@ -7,13 +7,15 @@ const { Pool } = pg;
 
 const pool = new Pool({
   connectionString: env.databaseUrl,
-  ssl: { rejectUnauthorized: false }
+  ssl: env.databaseUrl
+    ? { rejectUnauthorized: env.databaseSslRejectUnauthorized }
+    : undefined
 });
 const adapter = new PrismaPg(pool);
 
 export const prisma = new PrismaClient({
   adapter,
-  log: env.nodeEnv === "development" ? ["query", "warn", "error"] : ["warn", "error"]
+  log: env.prismaQueryLogEnabled ? ["query", "warn", "error"] : ["warn", "error"]
 });
 
 export const disconnectPrisma = async () => {

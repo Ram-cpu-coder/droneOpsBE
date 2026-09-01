@@ -8,6 +8,7 @@ import { isPointInPolygon } from "../utils/geo.js";
 
 const toApiTelemetry = (record) => ({
   id: record.id,
+  organisationId: record.organisationId,
   droneId: record.droneId,
   missionId: record.missionId,
   timestamp: record.timestamp,
@@ -28,7 +29,9 @@ const toApiTelemetry = (record) => ({
     strength: record.signalStrength,
     linkQuality: record.linkQuality
   },
-  status: record.status
+  status: record.status,
+  source: record.rawPayload?.source,
+  simulator: record.rawPayload?.simulator
 });
 
 export const ingestTelemetry = async (organisationId, payload) => {
@@ -69,7 +72,9 @@ export const ingestTelemetry = async (organisationId, payload) => {
     syncMissionProgressFromTelemetry(mission, record)
   ]);
   const apiTelemetry = toApiTelemetry(record);
-  publishTelemetry(apiTelemetry);
+  if (!payload.suppressLivePublish) {
+    publishTelemetry(apiTelemetry);
+  }
   alerts.forEach(publishAlert);
 
   await prisma.drone.update({
@@ -93,7 +98,7 @@ const resolveTelemetryMission = async (organisationId, droneId, missionIdentifie
     const mission = await prisma.mission.findFirst({
       where: {
         organisationId,
-        OR: [{ id: missionIdentifier }, { missionCode: missionIdentifier }]
+        OR: [{ id: missionIdentifier }, { missionCode: missionIdentifier }, { synctegralMissionId: missionIdentifier }]
       },
       include: { droneAssignments: true }
     });
@@ -138,14 +143,34 @@ export const getLatestTelemetry = async (organisationId) => {
       status: true,
       missions: {
         where: { status: "ACTIVE" },
-        select: { id: true, missionCode: true, name: true, status: true },
+        select: {
+          id: true,
+          missionCode: true,
+          name: true,
+          status: true,
+          plannedRoute: true,
+          launchSite: true,
+          operatingArea: true,
+          progress: true
+        },
         take: 1,
         orderBy: { updatedAt: "desc" }
       },
       missionAssignments: {
         where: { mission: { status: "ACTIVE" } },
         select: {
-          mission: { select: { id: true, missionCode: true, name: true, status: true } }
+          mission: {
+            select: {
+              id: true,
+              missionCode: true,
+              name: true,
+              status: true,
+              plannedRoute: true,
+              launchSite: true,
+              operatingArea: true,
+              progress: true
+            }
+          }
         },
         take: 1,
         orderBy: { createdAt: "desc" }
@@ -153,12 +178,24 @@ export const getLatestTelemetry = async (organisationId) => {
     }
   });
 
-  const latest = await Promise.all(
-    drones.map(async (drone) => {
-      const record = await prisma.telemetryLog.findFirst({
-        where: { droneId: drone.id },
-        orderBy: { timestamp: "desc" }
-      });
+  const latestRecords = await prisma.telemetryLog.findMany({
+    where: {
+      organisationId,
+      droneId: { in: drones.map((drone) => drone.id) }
+    },
+    orderBy: { timestamp: "desc" },
+    take: Math.max(drones.length * 10, 50)
+  });
+  const latestRecordByDroneId = new Map();
+  latestRecords.forEach((record) => {
+    const currentRecord = latestRecordByDroneId.get(record.droneId);
+    if (!currentRecord || isTelemetryRecordNewerForLiveView(record, currentRecord)) {
+      latestRecordByDroneId.set(record.droneId, record);
+    }
+  });
+
+  const latest = drones.map((drone) => {
+      const record = latestRecordByDroneId.get(drone.id);
       const { missions, missionAssignments, ...droneSummary } = drone;
       return {
         drone: {
@@ -167,8 +204,7 @@ export const getLatestTelemetry = async (organisationId) => {
         },
         telemetry: record ? toApiTelemetry(record) : null
       };
-    })
-  );
+    });
 
   return latest;
 };
@@ -183,7 +219,7 @@ export const getDroneTelemetry = async (organisationId, droneIdentifier, limit =
   if (!drone) throw new AppError("Drone not found", 404, "DRONE_NOT_FOUND");
 
   const records = await prisma.telemetryLog.findMany({
-    where: { droneId: drone.id },
+    where: { organisationId, droneId: drone.id },
     orderBy: { timestamp: "desc" },
     take: limit
   });
@@ -201,7 +237,7 @@ export const getMissionReplay = async (organisationId, missionId) => {
   if (!mission) throw new AppError("Mission not found", 404, "MISSION_NOT_FOUND");
 
   const records = await prisma.telemetryLog.findMany({
-    where: { missionId: mission.id },
+    where: { organisationId, missionId: mission.id },
     orderBy: { timestamp: "asc" }
   });
 
@@ -216,6 +252,7 @@ const evaluateTelemetryAlerts = async (organisationId, drone, record) => {
     alerts.push({
       type: "LOW_BATTERY",
       severity: "HIGH",
+      organisationId,
       droneId: drone.id,
       message: `${drone.droneCode} battery below ${thresholds.minimumLandingBattery}%`,
       timestamp: record.timestamp
@@ -227,6 +264,7 @@ const evaluateTelemetryAlerts = async (organisationId, drone, record) => {
     alerts.push({
       type: "SIGNAL_LOSS",
       severity: record.signalStrength <= 5 || ["LOST", "OFFLINE"].includes(record.linkQuality.toUpperCase()) ? "CRITICAL" : "MEDIUM",
+      organisationId,
       droneId: drone.id,
       message: `${drone.droneCode} signal below ${thresholds.lowSignalWarning}%`,
       timestamp: record.timestamp
@@ -249,6 +287,7 @@ const evaluateTelemetryAlerts = async (organisationId, drone, record) => {
       alerts.push({
         type: "GEOFENCE_BREACH",
         severity: geofence.type === "RESTRICTED" ? "CRITICAL" : "MEDIUM",
+        organisationId,
         droneId: drone.id,
         geofenceId: geofence.id,
         message: `${drone.droneCode} entered ${geofence.type.toLowerCase()} geofence: ${geofence.name}`,
@@ -259,3 +298,21 @@ const evaluateTelemetryAlerts = async (organisationId, drone, record) => {
 
   return alerts;
 };
+
+const isTelemetryRecordNewerForLiveView = (candidate, current) => {
+  const candidateSequence = getTelemetrySequence(candidate);
+  const currentSequence = getTelemetrySequence(current);
+
+  if (Number.isFinite(candidateSequence) && Number.isFinite(currentSequence)) {
+    return candidateSequence > currentSequence;
+  }
+
+  return new Date(candidate.timestamp).getTime() > new Date(current.timestamp).getTime();
+};
+
+const getTelemetrySequence = (record) => Number(
+  record?.rawPayload?.simulator?.sequence
+  ?? record?.rawPayload?.sequence
+  ?? record?.rawPayload?.simulator?.raw?.sequence_no
+  ?? record?.rawPayload?.simulator?.raw?.sequence
+);

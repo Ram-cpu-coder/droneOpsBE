@@ -35,7 +35,9 @@ export const createApp = () => {
   app.use(express.urlencoded({ extended: true }));
   app.use(cookieParser());
   app.use(morgan(env.nodeEnv === "production" ? "combined" : "dev"));
-  app.use("/uploads", express.static(path.resolve(env.uploadDir)));
+  if (env.nodeEnv !== "production") {
+    app.use("/uploads", express.static(path.resolve(env.uploadDir)));
+  }
 
   app.use(env.apiPrefix, apiRouter);
   app.use(notFoundHandler);

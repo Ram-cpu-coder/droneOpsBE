@@ -34,6 +34,14 @@ export const createMission = async (organisationId, data, actor) => {
   await Promise.all(droneIds.map((droneId) => ensureDroneAssignable(organisationId, droneId)));
   await Promise.all(pilotIds.map((pilotId) => ensurePilotAssignable(organisationId, pilotId)));
   const missionCode = data.missionCode ?? await generateMissionCode(organisationId);
+  const status = isSystemAdministrator(actor.role) ? "APPROVED" : "PLANNED";
+  await assertMissionResourceAvailability(organisationId, {
+    droneIds,
+    pilotIds,
+    plannedStartAt: data.plannedStartAt,
+    plannedEndAt: data.plannedEndAt,
+    status
+  });
 
   return prisma.mission.create({
     data: {
@@ -41,7 +49,7 @@ export const createMission = async (organisationId, data, actor) => {
       missionCode,
       name: data.name,
       type: data.type,
-      status: isSystemAdministrator(actor.role) ? "APPROVED" : "PLANNED",
+      status,
       createdById: actor.id,
       droneId: droneIds[0],
       pilotId: pilotIds[0],
@@ -136,6 +144,15 @@ export const updateMission = async (organisationId, id, data, actorRole) => {
     throw new AppError("Only system administrators can change mission status directly", 403, "MISSION_STATUS_ADMIN_ONLY");
   }
 
+  await assertMissionResourceAvailability(organisationId, {
+    missionId: mission.id,
+    droneIds: nextDroneIds,
+    pilotIds: nextPilotIds,
+    plannedStartAt: normalizedData.plannedStartAt ?? mission.plannedStartAt,
+    plannedEndAt: normalizedData.plannedEndAt ?? mission.plannedEndAt,
+    status: normalizedData.status ?? mission.status
+  });
+
   return prisma.$transaction(async (tx) => {
     const updatedMission = await tx.mission.update({
       where: { id },
@@ -169,12 +186,25 @@ export const updateMission = async (organisationId, id, data, actorRole) => {
 export const approveMission = async (organisationId, id) => {
   const mission = await prisma.mission.findFirst({
     where: { id, organisationId },
-    include: { createdBy: { select: { id: true, name: true, email: true, isVerified: true } } }
+    include: {
+      createdBy: { select: { id: true, name: true, email: true, isVerified: true } },
+      droneAssignments: true,
+      pilotAssignments: true
+    }
   });
   if (!mission) throw new AppError("Mission not found", 404, "MISSION_NOT_FOUND");
   if (mission.status !== "PLANNED") {
     throw new AppError("Only missions awaiting approval can be approved", 409, "MISSION_NOT_AWAITING_APPROVAL");
   }
+
+  await assertMissionResourceAvailability(organisationId, {
+    missionId: mission.id,
+    droneIds: assignedDroneIds(mission),
+    pilotIds: assignedPilotIds(mission),
+    plannedStartAt: mission.plannedStartAt,
+    plannedEndAt: mission.plannedEndAt,
+    status: "APPROVED"
+  });
 
   const approvedMission = await prisma.mission.update({
     where: { id },
@@ -361,6 +391,77 @@ const validateMissionSchedule = (mission) => {
   if (plannedStartAt && plannedEndAt && plannedEndAt < plannedStartAt) {
     throw new AppError("Mission end time cannot be before start time", 400, "INVALID_MISSION_SCHEDULE");
   }
+};
+
+const blockingMissionStatuses = ["APPROVED", "RISK_ASSESSMENT_COMPLETED", "ACTIVE"];
+
+const assertMissionResourceAvailability = async (
+  organisationId,
+  { missionId, droneIds = [], pilotIds = [], plannedStartAt, plannedEndAt, status }
+) => {
+  if (!blockingMissionStatuses.includes(status)) return;
+
+  const start = plannedStartAt ? new Date(plannedStartAt) : null;
+  const end = plannedEndAt ? new Date(plannedEndAt) : null;
+  if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return;
+
+  const conflicts = await prisma.mission.findMany({
+    where: {
+      organisationId,
+      id: missionId ? { not: missionId } : undefined,
+      status: { in: blockingMissionStatuses },
+      plannedStartAt: { lt: end },
+      plannedEndAt: { gt: start },
+      OR: [
+        { droneId: { in: droneIds } },
+        { pilotId: { in: pilotIds } },
+        { droneAssignments: { some: { droneId: { in: droneIds } } } },
+        { pilotAssignments: { some: { pilotId: { in: pilotIds } } } }
+      ]
+    },
+    include: {
+      droneAssignments: { include: { drone: { select: { id: true, droneCode: true } } } },
+      pilotAssignments: { include: { pilot: { select: { id: true, name: true } } } },
+      drone: { select: { id: true, droneCode: true } },
+      pilot: { select: { id: true, name: true } }
+    }
+  });
+
+  if (!conflicts.length) return;
+
+  const droneConflicts = new Set();
+  const pilotConflicts = new Set();
+
+  conflicts.forEach((mission) => {
+    const missionDroneIds = assignedDroneIds(mission);
+    const missionPilotIds = assignedPilotIds(mission);
+    missionDroneIds
+      .filter((droneId) => droneIds.includes(droneId))
+      .forEach((droneId) => droneConflicts.add(findDroneLabel(mission, droneId)));
+    missionPilotIds
+      .filter((pilotId) => pilotIds.includes(pilotId))
+      .forEach((pilotId) => pilotConflicts.add(findPilotLabel(mission, pilotId)));
+  });
+
+  const parts = [];
+  if (droneConflicts.size) parts.push(`Drone already scheduled: ${[...droneConflicts].join(", ")}`);
+  if (pilotConflicts.size) parts.push(`Pilot already scheduled: ${[...pilotConflicts].join(", ")}`);
+
+  throw new AppError(
+    `${parts.join(". ")}. Select different resources or change the mission time.`,
+    409,
+    "MISSION_RESOURCE_CONFLICT"
+  );
+};
+
+const findDroneLabel = (mission, droneId) => {
+  if (mission.drone?.id === droneId) return mission.drone.droneCode;
+  return mission.droneAssignments?.find((assignment) => assignment.droneId === droneId)?.drone?.droneCode ?? droneId;
+};
+
+const findPilotLabel = (mission, pilotId) => {
+  if (mission.pilot?.id === pilotId) return mission.pilot.name;
+  return mission.pilotAssignments?.find((assignment) => assignment.pilotId === pilotId)?.pilot?.name ?? pilotId;
 };
 
 const syncMissionDroneStatus = async (tx, mission, nextStatus, nextDroneId) => {

@@ -32,6 +32,11 @@ export const createIncident = async (organisationId, reportedById, data) => {
   const droneIds = normalizeAssignmentIds(data.droneId, data.droneIds);
   const assigneeIds = normalizeAssignmentIds(data.assignedToId, data.assignedToIds);
   if (!droneIds.length) throw new AppError("Select at least one affected drone before logging the incident", 400, "INCIDENT_DRONE_REQUIRED");
+  await ensureIncidentRelationsBelongToOrganisation(organisationId, {
+    droneIds,
+    missionId: data.missionId,
+    assigneeIds
+  });
 
   const incident = await prisma.$transaction(async (tx) => {
     const createdIncident = await tx.incident.create({
@@ -187,9 +192,17 @@ export const updateIncident = async (organisationId, id, data) => {
   const hasAssigneeLinks = data.assignedToId !== undefined || data.assignedToIds !== undefined;
   const droneIds = hasDroneLinks ? normalizeAssignmentIds(data.droneId, data.droneIds) : [];
   const assigneeIds = hasAssigneeLinks ? normalizeAssignmentIds(data.assignedToId, data.assignedToIds) : [];
+  await ensureIncidentRelationsBelongToOrganisation(organisationId, {
+    droneIds,
+    missionId: data.missionId,
+    assigneeIds
+  });
+
   const updateData = { ...data };
   delete updateData.droneIds;
   delete updateData.assignedToIds;
+  delete updateData.timeline;
+  delete updateData.evidence;
   if (hasDroneLinks) updateData.droneId = droneIds[0];
   if (hasAssigneeLinks) updateData.assignedToId = assigneeIds[0] ?? null;
 
@@ -249,6 +262,35 @@ const generateIncidentCode = async (organisationId) => {
 const normalizeAssignmentIds = (primaryId, ids = []) => (
   [...new Set([primaryId, ...(Array.isArray(ids) ? ids : [])].filter(Boolean))]
 );
+
+const ensureIncidentRelationsBelongToOrganisation = async (organisationId, { droneIds = [], missionId, assigneeIds = [] }) => {
+  const uniqueDroneIds = [...new Set(droneIds)];
+  const uniqueAssigneeIds = [...new Set(assigneeIds)];
+
+  const [droneCount, missionCount, assigneeCount] = await Promise.all([
+    uniqueDroneIds.length
+      ? prisma.drone.count({ where: { organisationId, id: { in: uniqueDroneIds } } })
+      : 0,
+    missionId
+      ? prisma.mission.count({ where: { organisationId, id: missionId } })
+      : 0,
+    uniqueAssigneeIds.length
+      ? prisma.user.count({ where: { organisationId, id: { in: uniqueAssigneeIds } } })
+      : 0
+  ]);
+
+  if (droneCount !== uniqueDroneIds.length) {
+    throw new AppError("One or more affected drones do not belong to this organisation", 403, "INCIDENT_DRONE_FORBIDDEN");
+  }
+
+  if (missionId && missionCount !== 1) {
+    throw new AppError("Incident mission does not belong to this organisation", 403, "INCIDENT_MISSION_FORBIDDEN");
+  }
+
+  if (assigneeCount !== uniqueAssigneeIds.length) {
+    throw new AppError("One or more assignees do not belong to this organisation", 403, "INCIDENT_ASSIGNEE_FORBIDDEN");
+  }
+};
 
 const captureIncidentTelemetryEvidence = async (tx, organisationId, { incident, droneIds, missionId }) => {
   const capturedAt = new Date();
@@ -437,7 +479,11 @@ const hasExpectedFileSignature = (file) => {
   if (["image/heic", "image/heif", "video/mp4", "video/quicktime"].includes(file.mimetype)) return buffer.toString("ascii", 4, 8) === "ftyp";
   if (file.mimetype === "video/webm") return buffer[0] === 0x1a && buffer[1] === 0x45 && buffer[2] === 0xdf && buffer[3] === 0xa3;
   if (file.mimetype === "application/pdf") return buffer.toString("ascii", 0, 5) === "%PDF-";
-  if (file.mimetype === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") return buffer[0] === 0x50 && buffer[1] === 0x4b;
+  if (file.mimetype === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+    if (buffer[0] !== 0x50 || buffer[1] !== 0x4b) return false;
+    const zipText = buffer.toString("latin1");
+    return zipText.includes("[Content_Types].xml") && zipText.includes("word/");
+  }
   if (file.mimetype === "application/msword") return buffer.subarray(0, 8).equals(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]));
   if (file.mimetype === "text/plain") return !buffer.subarray(0, Math.min(buffer.length, 2048)).includes(0);
 

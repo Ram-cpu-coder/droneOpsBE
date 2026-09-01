@@ -7,7 +7,7 @@ import { telemetryCreateSchema } from "../validators/core.validators.js";
 export const telemetryRouter = Router();
 
 telemetryRouter.use(requireAuth);
-telemetryRouter.post("/", requirePermission("telemetry:read"), validate(telemetryCreateSchema), telemetryController.ingest);
+telemetryRouter.post("/", requirePermission("*"), validate(telemetryCreateSchema), telemetryController.ingest);
 telemetryRouter.get("/live", requirePermission("telemetry:read"), telemetryController.latest);
-telemetryRouter.post("/synctegral/sync", requirePermission("telemetry:read"), telemetryController.syncSynctegral);
+telemetryRouter.post("/synctegral/sync", requirePermission("*"), telemetryController.syncSynctegral);
 telemetryRouter.get("/:droneId", requirePermission("telemetry:read"), telemetryController.byDrone);

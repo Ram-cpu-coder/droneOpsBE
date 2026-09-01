@@ -15,6 +15,11 @@ if (process.env.NODE_ENV === "production") {
   if (missing.length) {
     throw new Error(`Missing required production env vars: ${missing.join(", ")}`);
   }
+
+  const weakSecrets = ["JWT_ACCESS_SECRET", "JWT_REFRESH_SECRET"].filter((key) => process.env[key].length < 32);
+  if (weakSecrets.length) {
+    throw new Error(`Production secrets must be at least 32 characters: ${weakSecrets.join(", ")}`);
+  }
 }
 
 export const env = {
@@ -27,6 +32,9 @@ export const env = {
     .filter(Boolean),
   clientPublicUrl: process.env.CLIENT_PUBLIC_URL ?? "http://127.0.0.1:5173",
   databaseUrl: process.env.DATABASE_URL,
+  databaseSslRejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED
+    ? process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== "false"
+    : process.env.NODE_ENV === "production",
   jwtAccessSecret: process.env.JWT_ACCESS_SECRET ?? "dev-access-secret-change-me",
   jwtRefreshSecret: process.env.JWT_REFRESH_SECRET ?? "dev-refresh-secret-change-me",
   jwtAccessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN ?? "15m",
@@ -54,5 +62,10 @@ export const env = {
   synctegralDroneId: process.env.SYNCTEGRAL_DRONE_ID ?? "SIM-001",
   synctegralApiBaseUrl: process.env.SYNCTEGRAL_API_BASE_URL ?? "https://synctegral-droneops-api.onrender.com",
   synctegralLatestUrl: process.env.SYNCTEGRAL_LATEST_URL ?? `${process.env.SYNCTEGRAL_API_BASE_URL ?? "https://synctegral-droneops-api.onrender.com"}/v1/drones/${process.env.SYNCTEGRAL_DRONE_ID ?? "SIM-001"}/latest`,
-  synctegralTelemetryPollIntervalMs: Number(process.env.SYNCTEGRAL_TELEMETRY_POLL_INTERVAL_MS ?? 3000)
+  synctegralTelemetryPollIntervalMs: Number(process.env.SYNCTEGRAL_TELEMETRY_POLL_INTERVAL_MS ?? 3000),
+  synctegralStreamEnabled: process.env.SYNCTEGRAL_STREAM_ENABLED === "true",
+  synctegralStreamUrl: process.env.SYNCTEGRAL_STREAM_URL ?? `${(process.env.SYNCTEGRAL_API_BASE_URL ?? "https://synctegral-droneops-api.onrender.com").replace(/^http/, "ws")}/v1/stream/${process.env.SYNCTEGRAL_DRONE_ID ?? "SIM-001"}`,
+  synctegralMissionApiEnabled: process.env.SYNCTEGRAL_MISSION_API_ENABLED === "true",
+  synctegralMissionApiUrl: process.env.SYNCTEGRAL_MISSION_API_URL ?? `${process.env.SYNCTEGRAL_API_BASE_URL ?? "https://synctegral-droneops-api.onrender.com"}/v1/missions`,
+  prismaQueryLogEnabled: process.env.PRISMA_QUERY_LOG === "true"
 };

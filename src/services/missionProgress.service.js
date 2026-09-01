@@ -7,6 +7,19 @@ export const syncMissionProgressFromTelemetry = async (mission, telemetryRecord)
   if (!mission || mission.status !== "ACTIVE") return null;
 
   if (telemetryRecord.status === "MISSION_COMPLETE") {
+    if (!isCompletionForMissionRun(mission, telemetryRecord)) {
+      return {
+        missionId: mission.id,
+        missionCode: mission.missionCode,
+        progress: mission.progress,
+        source: "TELEMETRY",
+        updated: false,
+        completed: false,
+        ignoredCompletion: true,
+        reason: "Telemetry completion was ignored because it does not match this mission run."
+      };
+    }
+
     const plannedRoute = normalizeRouteContainer(mission.plannedRoute);
     const waypoints = extractWaypoints(mission.plannedRoute);
     const routeProgress = {
@@ -135,6 +148,21 @@ export const syncMissionProgressFromTelemetry = async (mission, telemetryRecord)
     updated: true
   };
 };
+
+const isCompletionForMissionRun = (mission, telemetryRecord) => {
+  const externalMissionId = getTelemetryExternalMissionId(telemetryRecord);
+
+  if (!externalMissionId) return false;
+  return String(mission.synctegralMissionId ?? "") === String(externalMissionId);
+};
+
+const getTelemetryExternalMissionId = (telemetryRecord) => (
+  telemetryRecord.rawPayload?.simulator?.missionId
+  ?? telemetryRecord.rawPayload?.simulator?.raw?.mission_id
+  ?? telemetryRecord.rawPayload?.mission_id
+  ?? telemetryRecord.rawPayload?.missionId
+  ?? null
+);
 
 export const extractWaypoints = (plannedRoute) => {
   const route = normalizeRouteContainer(plannedRoute);
