@@ -74,8 +74,29 @@ export const syncMissionToSynctegral = async (organisationId, missionId) => {
     });
 
     const responsePayload = response.payload;
+    if (response.status === 409) {
+      const detail = responsePayload?.detail;
+      const existingId = typeof detail === "string"
+        ? detail.match(/^A mission with this external_reference already exists: (\S+)$/)?.[1]
+        : null;
+      if (existingId) {
+        const existing = await requestSynctegralMissionApi(`${env.synctegralMissionApiUrl}/${encodeURIComponent(existingId)}`, {
+          method: "GET",
+          headers: { "X-API-Key": env.synctegralCustomerKey }
+        });
+        const remoteMission = existing.payload?.mission ?? existing.payload?.data ?? existing.payload;
+        // Recover only a reference verified through the authenticated Mission API.
+        if (existing.ok && remoteMission?.external_reference === body.external_reference) {
+          await prisma.mission.update({
+            where: { id: mission.id, organisationId },
+            data: { synctegralMissionId: existingId }
+          });
+          return patchSynctegralMission(organisationId, missionId, existingId, body);
+        }
+      }
+    }
     if (!response.ok) {
-      const message = responsePayload?.message ?? `Synctegral Mission API request failed with ${response.status}`;
+      const message = getMissionApiError(response);
       return markMissionSync(organisationId, missionId, {
         status: FAILED,
         error: message
@@ -164,7 +185,7 @@ export const getSynctegralMission = async (organisationId, missionId) => {
     if (!response.ok) {
       return markMissionSync(organisationId, missionId, {
         status: FAILED,
-        error: response.payload?.message ?? `Synctegral Mission API request failed with ${response.status}`
+          error: getMissionApiError(response)
       });
     }
 
@@ -223,6 +244,9 @@ const getMissionForSync = (organisationId, missionId) => (
 );
 
 const patchSynctegralMission = async (organisationId, missionId, synctegralMissionId, body) => {
+  // References identify the original creation and must remain unchanged on updates.
+  const patchBody = { ...body };
+  delete patchBody.external_reference;
   if (!env.synctegralMissionApiEnabled) {
     return markMissionSync(organisationId, missionId, {
       status: SKIPPED,
@@ -247,14 +271,14 @@ const patchSynctegralMission = async (organisationId, missionId, synctegralMissi
         "X-API-Key": env.synctegralCustomerKey,
         "X-Request-ID": `droneops-mission-${missionId}-patch`
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(patchBody)
     });
 
     if (!response.ok) {
       return markMissionSync(organisationId, missionId, {
         status: FAILED,
         synctegralMissionId,
-        error: response.payload?.message ?? `Synctegral Mission API request failed with ${response.status}`
+        error: getMissionApiError(response)
       });
     }
 
@@ -291,7 +315,7 @@ const buildSynctegralMissionPayload = (mission) => {
   ].filter(Boolean).join(" | ");
 
   return cleanPayload({
-    external_reference: mission.missionCode ?? mission.id,
+    external_reference: mission.id,
     mission_name: mission.name,
     description: description || "DroneOps mission",
     planned_start_utc: mission.plannedStartAt?.toISOString() ?? null,
@@ -438,6 +462,11 @@ const readJsonResponse = async (response) => {
   } catch {
     return { message: text };
   }
+};
+
+const getMissionApiError = (response) => {
+  const detail = response.payload?.message ?? response.payload?.detail;
+  return typeof detail === "string" ? detail : `Synctegral Mission API request failed with ${response.status}`;
 };
 
 const normaliseJson = (value) => {

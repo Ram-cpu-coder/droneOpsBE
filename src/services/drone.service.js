@@ -9,10 +9,12 @@ const droneStatusSyncState = new Map();
 export const listDrones = async (organisationId) => {
   await syncMissionDroneStatuses(organisationId);
 
-  return prisma.drone.findMany({
+  const drones = await prisma.drone.findMany({
     where: { organisationId },
     orderBy: { createdAt: "desc" }
   });
+
+  return attachMissionSummaries(organisationId, drones);
 };
 
 export const createDrone = async (organisationId, data) => {
@@ -204,6 +206,74 @@ const syncMissionDroneStatusesNow = async (organisationId) => {
 
   return activeDroneIds;
 };
+
+const attachMissionSummaries = async (organisationId, drones) => {
+  if (!drones.length) return drones;
+
+  const droneIds = drones.map((drone) => drone.id);
+  const missions = await prisma.mission.findMany({
+    where: {
+      organisationId,
+      OR: [
+        { droneId: { in: droneIds } },
+        { droneAssignments: { some: { droneId: { in: droneIds } } } }
+      ]
+    },
+    select: {
+      id: true,
+      missionCode: true,
+      name: true,
+      status: true,
+      plannedStartAt: true,
+      plannedEndAt: true,
+      launchSite: true,
+      operatingArea: true,
+      plannedRoute: true,
+      geofenceConfig: true,
+      updatedAt: true,
+      droneId: true,
+      droneAssignments: { select: { droneId: true } }
+    },
+    orderBy: { updatedAt: "desc" },
+    take: Math.max(droneIds.length * 8, 40)
+  });
+
+  const missionsByDroneId = new Map();
+  missions.forEach((mission) => {
+    const assignedDroneIds = [
+      mission.droneId,
+      ...mission.droneAssignments.map((assignment) => assignment.droneId)
+    ].filter(Boolean);
+
+    assignedDroneIds.forEach((droneId) => {
+      if (!missionsByDroneId.has(droneId)) missionsByDroneId.set(droneId, []);
+      missionsByDroneId.get(droneId).push(toDroneMissionSummary(mission));
+    });
+  });
+
+  return drones.map((drone) => {
+    const droneMissions = missionsByDroneId.get(drone.id) ?? [];
+    return {
+      ...drone,
+      activeMission: droneMissions.find((mission) => mission.status === "ACTIVE") ?? null,
+      lastMission: droneMissions.find((mission) => mission.status !== "ACTIVE") ?? droneMissions[0] ?? null
+    };
+  });
+};
+
+const toDroneMissionSummary = (mission) => ({
+  id: mission.id,
+  missionCode: mission.missionCode,
+  name: mission.name,
+  status: mission.status,
+  plannedStartAt: mission.plannedStartAt,
+  plannedEndAt: mission.plannedEndAt,
+  launchSite: mission.launchSite,
+  operatingArea: mission.operatingArea,
+  plannedRoute: mission.plannedRoute,
+  geofenceConfig: mission.geofenceConfig,
+  updatedAt: mission.updatedAt
+});
 
 const resolveTelemetryProvider = (data) => {
   if (data.telemetryProvider && data.telemetryProvider !== "NONE") return data.telemetryProvider;

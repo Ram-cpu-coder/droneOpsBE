@@ -51,6 +51,7 @@ enum ConnectorStatus {
 }
 
 enum MissionStatus {
+  AWAITING_AUTHORITY_APPROVAL
   PLANNED
   APPROVED
   RISK_ASSESSMENT_COMPLETED
@@ -179,6 +180,7 @@ model User {
   passwordHash     String
   role             UserRole
   profileImageUrl  String?
+  pilotCredentials Json?
   isVerified       Boolean   @default(false)
   verificationToken          String?
   verificationTokenExpiresAt DateTime?

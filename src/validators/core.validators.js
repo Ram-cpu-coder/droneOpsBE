@@ -120,9 +120,7 @@ export const missionCreateSchema = z.object({
     missionCode: z.string().min(2).optional(),
     name: z.string().min(2),
     type: z.string().min(2),
-    droneId: z.string().uuid().optional(),
     droneIds: z.array(z.string().uuid()).min(1).optional(),
-    pilotId: z.string().uuid().optional(),
     pilotIds: z.array(z.string().uuid()).min(1).optional(),
     plannedRoute: z.unknown().optional(),
     geofenceConfig: z.unknown().optional(),
@@ -130,7 +128,7 @@ export const missionCreateSchema = z.object({
     operatingArea: z.string().optional(),
     plannedStartAt: z.string().datetime().optional(),
     plannedEndAt: z.string().datetime().optional()
-  }).superRefine(validateMissionAssignments).superRefine(validateMissionDates)),
+  }).superRefine(validateMissionAssignments).superRefine(validateMissionDates).superRefine(validateMissionRouteAcceptance)),
   params: z.object({}).optional(),
   query: z.object({}).optional()
 });
@@ -140,10 +138,8 @@ export const missionUpdateSchema = z.object({
     missionCode: z.string().min(2).optional(),
     name: z.string().min(2).optional(),
     type: z.string().min(2).optional(),
-    status: z.enum(["PLANNED", "APPROVED", "RISK_ASSESSMENT_COMPLETED", "ACTIVE", "COMPLETED", "ABORTED", "CANCELLED"]).optional(),
-    droneId: z.string().uuid().optional(),
+    status: z.enum(["AWAITING_AUTHORITY_APPROVAL", "PLANNED", "APPROVED", "RISK_ASSESSMENT_COMPLETED", "ACTIVE", "COMPLETED", "ABORTED", "CANCELLED"]).optional(),
     droneIds: z.array(z.string().uuid()).min(1).optional(),
-    pilotId: z.string().uuid().optional(),
     pilotIds: z.array(z.string().uuid()).min(1).optional(),
     plannedRoute: z.unknown().optional(),
     geofenceConfig: z.unknown().optional(),
@@ -152,7 +148,23 @@ export const missionUpdateSchema = z.object({
     plannedStartAt: z.string().datetime().optional(),
     plannedEndAt: z.string().datetime().optional(),
     progress: z.number().int().min(0).max(100).optional()
-  }).superRefine(validateMissionDates),
+  }).superRefine(validateMissionDates).superRefine(validateMissionRouteAcceptanceOnUpdate),
+  params: z.object({ id: z.string().uuid() }),
+  query: z.object({}).optional()
+});
+
+export const missionRouteAnalysisSchema = z.object({
+  body: z.object({
+    plannedRoute: z.unknown()
+  }),
+  params: z.object({}).optional(),
+  query: z.object({}).optional()
+});
+
+export const missionAuthorityApprovalsSchema = z.object({
+  body: z.object({
+    approvals: z.record(z.string(), z.boolean())
+  }),
   params: z.object({ id: z.string().uuid() }),
   query: z.object({}).optional()
 });
@@ -327,11 +339,11 @@ function validateMissionDates(data, ctx) {
 }
 
 function validateMissionAssignments(data, ctx) {
-  if (!data.droneId && !data.droneIds?.length) {
+  if (!data.droneIds?.length) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["droneIds"], message: "At least one assigned drone is required" });
   }
 
-  if (!data.pilotId && !data.pilotIds?.length) {
+  if (!data.pilotIds?.length) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["pilotIds"], message: "At least one remote pilot is required" });
   }
 }
@@ -368,6 +380,43 @@ function validateOperatingAreaCoverage(data, ctx) {
     path: ["plannedRoute", "operatingArea"],
     message: `Operating area must cover the route ${uncoveredPoints.map(({ label }) => label).join(" and ")}`
   });
+}
+
+function validateMissionRouteAcceptance(data, ctx) {
+  const plannedRoute = data.plannedRoute;
+  if (!plannedRoute || typeof plannedRoute !== "object" || Array.isArray(plannedRoute)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["plannedRoute"],
+      message: "Analyse and accept the mission route before creating the mission"
+    });
+    return;
+  }
+
+  const waypoints = Array.isArray(plannedRoute.waypoints)
+    ? plannedRoute.waypoints.map(normalizeGeoPoint).filter(Boolean)
+    : [];
+
+  if (waypoints.length < 2) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["plannedRoute", "waypoints"],
+      message: "Accepted mission route must include at least a start point and end point"
+    });
+  }
+
+  if (plannedRoute.routeAnalysis?.accepted !== true) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["plannedRoute", "routeAnalysis"],
+      message: "Mission route analysis must be accepted before mission creation"
+    });
+  }
+}
+
+function validateMissionRouteAcceptanceOnUpdate(data, ctx) {
+  if (data.plannedRoute === undefined) return;
+  validateMissionRouteAcceptance(data, ctx);
 }
 
 function normalizeGeoPoint(point) {

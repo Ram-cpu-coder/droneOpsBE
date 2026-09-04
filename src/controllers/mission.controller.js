@@ -6,7 +6,7 @@ import { created, ok } from "../utils/apiResponse.js";
 
 export const list = asyncHandler(async (req, res) => {
   const missions = await missionService.listMissions(req.user.organisationId);
-  return ok(res, missions);
+  return ok(res, missions.map(serializeMission));
 });
 
 export const create = asyncHandler(async (req, res) => {
@@ -31,14 +31,14 @@ export const create = asyncHandler(async (req, res) => {
   await writeAudit({
     organisationId: req.user.organisationId,
     actorId: req.user.id,
-    action: responseMission.status === "PLANNED" ? "MISSION_SUBMITTED_FOR_APPROVAL" : "MISSION_CREATED",
+    action: getMissionCreateAuditAction(responseMission.status),
     entityType: "MISSION",
     entityId: responseMission.id,
     metadata: {
       missionCode: responseMission.missionCode,
       name: responseMission.name,
       status: responseMission.status,
-      requiresApproval: responseMission.status === "PLANNED",
+      requiresApproval: ["AWAITING_AUTHORITY_APPROVAL", "PLANNED"].includes(responseMission.status),
       approvalNotification,
       synctegralSync: {
         status: synctegralSync?.status,
@@ -48,7 +48,7 @@ export const create = asyncHandler(async (req, res) => {
     }
   });
 
-  return created(res, responseMission, responseMission.status === "PLANNED" ? "Mission submitted for approval" : "Mission created");
+  return created(res, serializeMission(responseMission), getMissionCreateMessage(responseMission.status));
 });
 
 export const update = asyncHandler(async (req, res) => {
@@ -70,7 +70,65 @@ export const update = asyncHandler(async (req, res) => {
       synctegralSync: toAuditSyncResult(synctegralSync)
     }
   });
-  return ok(res, responseMission, "Mission updated");
+  return ok(res, serializeMission(responseMission), "Mission updated");
+});
+
+export const analyseRoute = asyncHandler(async (req, res) => {
+  const authorityPlan = await missionService.analyseMissionRoute(req.validated.body.plannedRoute);
+  return ok(res, authorityPlan, "Mission route analysed");
+});
+
+export const updateAuthorityApprovals = asyncHandler(async (req, res) => {
+  const mission = await missionService.updateMissionAuthorityApprovals(
+    req.user.organisationId,
+    req.params.id,
+    req.validated.body.approvals,
+    req.user.role
+  );
+  const synctegralSync = await syncMissionPlanningToSynctegral(req.user.organisationId, mission.id);
+  const responseMission = mergeMissionSyncResult(mission, synctegralSync);
+
+  await writeAudit({
+    organisationId: req.user.organisationId,
+    actorId: req.user.id,
+    action: "MISSION_AUTHORITY_APPROVALS_UPDATED",
+    entityType: "MISSION",
+    entityId: responseMission.id,
+    metadata: {
+      missionCode: responseMission.missionCode,
+      name: responseMission.name,
+      status: responseMission.status,
+      synctegralSync: toAuditSyncResult(synctegralSync)
+    }
+  });
+
+  return ok(res, serializeMission(responseMission), "Mission authority approvals updated");
+});
+
+export const syncSynctegral = asyncHandler(async (req, res) => {
+  const mission = await missionService.ensureMissionExists(req.user.organisationId, req.params.id);
+  const synctegralSync = await syncMissionPlanningToSynctegral(req.user.organisationId, mission.id);
+  const responseMission = mergeMissionSyncResult(mission, synctegralSync);
+
+  await writeAudit({
+    organisationId: req.user.organisationId,
+    actorId: req.user.id,
+    action: "MISSION_SYNCTEGRAL_SYNC_RETRIED",
+    entityType: "MISSION",
+    entityId: responseMission.id,
+    metadata: {
+      missionCode: responseMission.missionCode,
+      name: responseMission.name,
+      status: responseMission.status,
+      synctegralSync: toAuditSyncResult(synctegralSync)
+    }
+  });
+
+  return ok(
+    res,
+    serializeMission(responseMission),
+    synctegralSync?.synced ? "Synctegral sync completed" : "Synctegral sync needs attention"
+  );
 });
 
 export const approve = asyncHandler(async (req, res) => {
@@ -100,7 +158,7 @@ export const approve = asyncHandler(async (req, res) => {
       approvalNotification
     }
   });
-  return ok(res, mission, "Mission approved");
+  return ok(res, serializeMission(mission), "Mission approved");
 });
 
 export const riskAssessment = asyncHandler(async (req, res) => {
@@ -145,7 +203,7 @@ export const start = asyncHandler(async (req, res) => {
       synctegralSync: toAuditSyncResult(synctegralSync)
     }
   });
-  return ok(res, responseMission, "Mission started");
+  return ok(res, serializeMission(responseMission), "Mission started");
 });
 
 export const complete = asyncHandler(async (req, res) => {
@@ -166,14 +224,111 @@ export const complete = asyncHandler(async (req, res) => {
       synctegralSync: toAuditSyncResult(synctegralSync)
     }
   });
-  return ok(res, responseMission, "Mission completed");
+  return ok(res, serializeMission(responseMission), "Mission completed");
 });
 
+export const remove = asyncHandler(async (req, res) => {
+  const currentMission = await missionService.ensureMissionExists(req.user.organisationId, req.params.id);
+  const shouldCancelSynctegralMission = currentMission.synctegralMissionId
+    && !["ACTIVE", "COMPLETED", "ABORTED", "CANCELLED"].includes(currentMission.status);
+  const synctegralSync = shouldCancelSynctegralMission
+    ? await updateSynctegralMissionStatus(req.user.organisationId, req.params.id, "CANCELLED")
+    : null;
+  const mission = await missionService.deleteMission(req.user.organisationId, req.params.id);
+
+  await writeAudit({
+    organisationId: req.user.organisationId,
+    actorId: req.user.id,
+    action: "MISSION_DELETED",
+    entityType: "MISSION",
+    entityId: mission.id,
+    metadata: {
+      missionCode: mission.missionCode,
+      name: mission.name,
+      status: mission.status,
+      synctegralMissionId: mission.synctegralMissionId,
+      synctegralSync: toAuditSyncResult(synctegralSync)
+    }
+  });
+
+  return ok(res, { id: mission.id }, "Mission deleted");
+});
+
+const serializeMission = (mission) => {
+  if (!mission) return mission;
+
+  const {
+    drone,
+    droneId,
+    droneAssignments,
+    pilot,
+    pilotId,
+    pilotAssignments,
+    ...missionFields
+  } = mission;
+
+  return {
+    ...missionFields,
+    drones: serializeMissionDrones({ drone, droneId, droneAssignments }),
+    pilots: serializeMissionPilots({ pilot, pilotId, pilotAssignments })
+  };
+};
+
+const serializeMissionDrones = ({ drone, droneId, droneAssignments = [] }) => {
+  const drones = [];
+  const seen = new Set();
+  const addDrone = (candidate, fallbackId, isPrimary = false) => {
+    const id = candidate?.id ?? fallbackId;
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    drones.push({
+      id,
+      droneCode: candidate?.droneCode ?? id,
+      model: candidate?.model ?? null,
+      manufacturer: candidate?.manufacturer ?? null,
+      serialNumber: candidate?.serialNumber ?? null,
+      status: candidate?.status ?? null,
+      batteryType: candidate?.batteryType ?? null,
+      telemetryProvider: candidate?.telemetryProvider ?? null,
+      externalDeviceId: candidate?.externalDeviceId ?? null,
+      isPrimary
+    });
+  };
+
+  droneAssignments.forEach((assignment) => addDrone(assignment.drone, assignment.droneId, Boolean(assignment.isPrimary)));
+  addDrone(drone, droneId, drones.length === 0 || Boolean(droneId));
+
+  return drones.sort((left, right) => Number(right.isPrimary) - Number(left.isPrimary));
+};
+
+const serializeMissionPilots = ({ pilot, pilotId, pilotAssignments = [] }) => {
+  const pilots = [];
+  const seen = new Set();
+  const addPilot = (candidate, fallbackId, isPrimary = false) => {
+    const id = candidate?.id ?? fallbackId;
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    pilots.push({
+      id,
+      name: candidate?.name ?? id,
+      email: candidate?.email ?? null,
+      role: candidate?.role ?? null,
+      isPrimary
+    });
+  };
+
+  pilotAssignments.forEach((assignment) => addPilot(assignment.pilot, assignment.pilotId, Boolean(assignment.isPrimary)));
+  addPilot(pilot, pilotId, pilots.length === 0 || Boolean(pilotId));
+
+  return pilots.sort((left, right) => Number(right.isPrimary) - Number(left.isPrimary));
+};
+
 const mergeMissionSyncResult = (mission, synctegralSync) => ({
-  ...(synctegralSync?.mission ?? mission),
+  ...mission,
   synctegralSyncStatus: synctegralSync?.status ?? synctegralSync?.mission?.synctegralSyncStatus ?? mission.synctegralSyncStatus,
   synctegralMissionId: synctegralSync?.synctegralMissionId ?? synctegralSync?.mission?.synctegralMissionId ?? mission.synctegralMissionId,
-  synctegralSyncError: synctegralSync?.error ?? synctegralSync?.mission?.synctegralSyncError ?? mission.synctegralSyncError
+  synctegralSyncError: synctegralSync?.synced ? null : synctegralSync?.error ?? synctegralSync?.mission?.synctegralSyncError ?? mission.synctegralSyncError,
+  synctegralSyncedAt: synctegralSync?.mission?.synctegralSyncedAt ?? mission.synctegralSyncedAt
 });
 
 const toAuditSyncResult = (synctegralSync) => ({
@@ -181,3 +336,15 @@ const toAuditSyncResult = (synctegralSync) => ({
   synctegralMissionId: synctegralSync?.synctegralMissionId,
   error: synctegralSync?.error
 });
+
+const getMissionCreateAuditAction = (status) => {
+  if (status === "AWAITING_AUTHORITY_APPROVAL") return "MISSION_AWAITING_AUTHORITY_APPROVAL";
+  if (status === "PLANNED") return "MISSION_SUBMITTED_FOR_APPROVAL";
+  return "MISSION_CREATED";
+};
+
+const getMissionCreateMessage = (status) => {
+  if (status === "AWAITING_AUTHORITY_APPROVAL") return "Mission saved awaiting authority approval";
+  if (status === "PLANNED") return "Mission submitted for approval";
+  return "Mission created";
+};

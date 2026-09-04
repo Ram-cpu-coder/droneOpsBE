@@ -7,3 +7,4 @@ export const geofenceRouter = Router();
 geofenceRouter.use(requireAuth);
 geofenceRouter.get("/", requirePermission("geofences:read"), geofenceController.list);
 geofenceRouter.post("/", requirePermission("geofences:manage"), geofenceController.create);
+geofenceRouter.put("/:id", requirePermission("geofences:manage"), geofenceController.update);

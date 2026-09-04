@@ -67,5 +67,9 @@ export const env = {
   synctegralStreamUrl: process.env.SYNCTEGRAL_STREAM_URL ?? `${(process.env.SYNCTEGRAL_API_BASE_URL ?? "https://synctegral-droneops-api.onrender.com").replace(/^http/, "ws")}/v1/stream/${process.env.SYNCTEGRAL_DRONE_ID ?? "SIM-001"}`,
   synctegralMissionApiEnabled: process.env.SYNCTEGRAL_MISSION_API_ENABLED === "true",
   synctegralMissionApiUrl: process.env.SYNCTEGRAL_MISSION_API_URL ?? `${process.env.SYNCTEGRAL_API_BASE_URL ?? "https://synctegral-droneops-api.onrender.com"}/v1/missions`,
+  councilBoundaryLookupEnabled: process.env.COUNCIL_BOUNDARY_LOOKUP_ENABLED
+    ? process.env.COUNCIL_BOUNDARY_LOOKUP_ENABLED === "true"
+    : process.env.NODE_ENV !== "production",
+  councilBoundaryServiceUrl: process.env.COUNCIL_BOUNDARY_SERVICE_URL ?? "https://portal.spatial.nsw.gov.au/server/rest/services/NSW_Administrative_Boundaries_Theme_multiCRS/FeatureServer/8/query",
   prismaQueryLogEnabled: process.env.PRISMA_QUERY_LOG === "true"
 };

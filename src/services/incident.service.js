@@ -9,7 +9,7 @@ export const listIncidents = async (organisationId) => {
     where: { organisationId },
     include: {
       drone: { select: { id: true, droneCode: true } },
-      mission: { select: { id: true, missionCode: true, name: true } },
+      mission: { select: { id: true, missionCode: true, name: true, launchSite: true, operatingArea: true, plannedRoute: true, geofenceConfig: true } },
       reportedBy: { select: { id: true, name: true, role: true } },
       assignedTo: { select: { id: true, name: true, role: true } },
       droneLinks: {
@@ -358,7 +358,7 @@ const findIncidentTelemetryRecords = (tx, telemetryWhere) => (
     take: 600,
     include: {
       drone: { select: { id: true, droneCode: true, model: true, externalDeviceId: true } },
-      mission: { select: { id: true, missionCode: true, name: true } }
+      mission: { select: { id: true, missionCode: true, name: true, launchSite: true, operatingArea: true, plannedRoute: true, geofenceConfig: true } }
     }
   })
 );

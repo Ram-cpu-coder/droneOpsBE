@@ -1,5 +1,6 @@
 export const permissions = {
   OPERATIONS_MANAGER: [
+    "pilots:read", "pilots:manage", "maintenance:read",
     "missions:manage",
     "drones:manage",
     "drones:read",
@@ -11,6 +12,7 @@ export const permissions = {
     "audit:read"
   ],
   REMOTE_PILOT: [
+    "pilots:read",
     "missions:read",
     "missions:assigned",
     "drones:read",
@@ -23,6 +25,7 @@ export const permissions = {
     "audit:read"
   ],
   MAINTENANCE_COORDINATOR: [
+    "maintenance:read",
     "maintenance:manage",
     "drones:read",
     "defects:manage",

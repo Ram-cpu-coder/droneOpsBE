@@ -1,26 +1,55 @@
 import { prisma } from "../config/prisma.js";
 import { AppError } from "../utils/AppError.js";
+import { mergeAuthorityAnalysisIntoMissionPlan, resolveRouteAuthorities } from "./councilBoundary.service.js";
 import { ensureDroneAssignable, syncMissionDroneStatuses } from "./drone.service.js";
 import { sendMissionApprovalRequestEmail, sendMissionApprovedEmail } from "./email.service.js";
+
+const missionRecordInclude = {
+  drone: {
+    select: {
+      id: true,
+      droneCode: true,
+      status: true,
+      model: true,
+      manufacturer: true,
+      serialNumber: true,
+      telemetryProvider: true,
+      externalDeviceId: true,
+      batteryType: true
+    }
+  },
+  pilot: { select: { id: true, name: true, email: true, role: true } },
+  droneAssignments: {
+    include: {
+      drone: {
+        select: {
+          id: true,
+          droneCode: true,
+          model: true,
+          manufacturer: true,
+          serialNumber: true,
+          status: true,
+          batteryType: true,
+          telemetryProvider: true,
+          externalDeviceId: true
+        }
+      }
+    },
+    orderBy: { createdAt: "asc" }
+  },
+  pilotAssignments: {
+    include: { pilot: { select: { id: true, name: true, email: true, role: true } } },
+    orderBy: { createdAt: "asc" }
+  },
+  riskAssessment: true
+};
 
 export const listMissions = async (organisationId) => {
   await syncMissionDroneStatuses(organisationId);
 
   return prisma.mission.findMany({
     where: { organisationId },
-    include: {
-      drone: { select: { id: true, droneCode: true, status: true } },
-      pilot: { select: { id: true, name: true, role: true } },
-      droneAssignments: {
-        include: { drone: { select: { id: true, droneCode: true, model: true, manufacturer: true, status: true, batteryType: true } } },
-        orderBy: { createdAt: "asc" }
-      },
-      pilotAssignments: {
-        include: { pilot: { select: { id: true, name: true, email: true, role: true } } },
-        orderBy: { createdAt: "asc" }
-      },
-      riskAssessment: true
-    },
+    include: missionRecordInclude,
     orderBy: { createdAt: "desc" }
   });
 };
@@ -34,7 +63,9 @@ export const createMission = async (organisationId, data, actor) => {
   await Promise.all(droneIds.map((droneId) => ensureDroneAssignable(organisationId, droneId)));
   await Promise.all(pilotIds.map((pilotId) => ensurePilotAssignable(organisationId, pilotId)));
   const missionCode = data.missionCode ?? await generateMissionCode(organisationId);
-  const status = isSystemAdministrator(actor.role) ? "APPROVED" : "PLANNED";
+  const authorityPlan = await buildMissionAuthorityPlan(data.plannedRoute, data.geofenceConfig);
+  assertAuthorityAnalysisReady(authorityPlan);
+  const status = getInitialMissionStatus(actor.role, authorityPlan);
   await assertMissionResourceAvailability(organisationId, {
     droneIds,
     pilotIds,
@@ -53,8 +84,8 @@ export const createMission = async (organisationId, data, actor) => {
       createdById: actor.id,
       droneId: droneIds[0],
       pilotId: pilotIds[0],
-      plannedRoute: data.plannedRoute,
-      geofenceConfig: data.geofenceConfig,
+      plannedRoute: authorityPlan.plannedRoute,
+      geofenceConfig: authorityPlan.geofenceConfig,
       launchSite: data.launchSite,
       operatingArea: data.operatingArea,
       plannedStartAt: data.plannedStartAt ? new Date(data.plannedStartAt) : undefined,
@@ -65,7 +96,8 @@ export const createMission = async (organisationId, data, actor) => {
       pilotAssignments: {
         create: pilotIds.map((pilotId, index) => ({ organisationId, pilotId, isPrimary: index === 0 }))
       }
-    }
+    },
+    include: missionRecordInclude
   });
 };
 
@@ -153,10 +185,21 @@ export const updateMission = async (organisationId, id, data, actorRole) => {
     status: normalizedData.status ?? mission.status
   });
 
+  if (normalizedData.plannedRoute !== undefined) {
+    const authorityPlan = await buildMissionAuthorityPlan(normalizedData.plannedRoute, normalizedData.geofenceConfig ?? mission.geofenceConfig);
+    assertAuthorityAnalysisReady(authorityPlan);
+    normalizedData.plannedRoute = authorityPlan.plannedRoute;
+    normalizedData.geofenceConfig = authorityPlan.geofenceConfig;
+    if (!normalizedData.status) {
+      normalizedData.status = getStatusForAuthorityApprovals(mission.status, actorRole, authorityPlan);
+    }
+  }
+
   return prisma.$transaction(async (tx) => {
     const updatedMission = await tx.mission.update({
       where: { id },
-      data: normalizedData
+      data: normalizedData,
+      include: missionRecordInclude
     });
 
     if (hasDroneAssignments) {
@@ -180,6 +223,141 @@ export const updateMission = async (organisationId, id, data, actorRole) => {
     }
 
     return updatedMission;
+  });
+};
+
+const buildMissionAuthorityPlan = async (plannedRoute, geofenceConfig, options = {}) => {
+  if (!plannedRoute || typeof plannedRoute !== "object" || Array.isArray(plannedRoute)) {
+    return { plannedRoute, geofenceConfig };
+  }
+
+  const authorityAnalysis = await resolveRouteAuthorities(plannedRoute);
+  return mergeAuthorityAnalysisIntoMissionPlan(plannedRoute, geofenceConfig, authorityAnalysis, options);
+};
+
+export const analyseMissionRoute = async (plannedRoute) => buildMissionAuthorityPlan(plannedRoute, null, { includeGeometry: true });
+
+const assertAuthorityAnalysisReady = (authorityPlan) => {
+  const authorityAnalysis = authorityPlan?.geofenceConfig?.authorityAnalysis;
+  if (!authorityAnalysis || authorityAnalysis.status === "READY") return;
+
+  throw new AppError(authorityAnalysis.message, 409, "COUNCIL_BOUNDARY_ANALYSIS_REQUIRED");
+};
+
+const getInitialMissionStatus = (actorRole, authorityPlan) => (
+  getAuthorityApprovalState(authorityPlan.geofenceConfig, authorityPlan.plannedRoute?.routeAnalysis?.authorityAnalysis).ready
+    ? getApprovedPlanningStatus(actorRole)
+    : "AWAITING_AUTHORITY_APPROVAL"
+);
+
+const getStatusForAuthorityApprovals = (currentStatus, actorRole, authorityPlan) => {
+  const approvalState = getAuthorityApprovalState(authorityPlan.geofenceConfig, authorityPlan.plannedRoute?.routeAnalysis?.authorityAnalysis);
+  if (!approvalState.ready) return "AWAITING_AUTHORITY_APPROVAL";
+  if (currentStatus === "AWAITING_AUTHORITY_APPROVAL") return getApprovedPlanningStatus(actorRole);
+  return currentStatus;
+};
+
+const getApprovedPlanningStatus = (actorRole) => (
+  isSystemAdministrator(actorRole) ? "APPROVED" : "PLANNED"
+);
+
+const getAuthorityApprovalState = (geofenceConfig, authorityAnalysis) => {
+  const authorities = [
+    ...(Array.isArray(geofenceConfig?.approvalRequirements) ? geofenceConfig.approvalRequirements : []),
+    ...(Array.isArray(authorityAnalysis?.authorities) ? authorityAnalysis.authorities : [])
+  ];
+  const authoritiesByKey = new Map();
+
+  authorities.forEach((authority) => {
+    const key = getAuthorityKey(authority);
+    if (!key || authoritiesByKey.has(key)) return;
+    const approvalStatus = String(authority.approvalStatus ?? "").toUpperCase();
+    authoritiesByKey.set(key, ["APPROVED", "GRANTED", "CONFIRMED"].includes(approvalStatus));
+  });
+
+  const values = [...authoritiesByKey.values()];
+  return {
+    total: values.length,
+    pending: values.filter((approved) => !approved).length,
+    ready: values.length === 0 || values.every(Boolean)
+  };
+};
+
+const applyAuthorityApprovalsToRoute = (plannedRoute, approvals) => {
+  const nextRoute = cloneJson(plannedRoute) ?? {};
+  const authorityAnalysis = nextRoute.routeAnalysis?.authorityAnalysis;
+  if (authorityAnalysis?.authorities) {
+    authorityAnalysis.authorities = authorityAnalysis.authorities.map((authority) => applyAuthorityApproval(authority, approvals));
+  }
+  if (nextRoute.routeAnalysis?.authorityApprovals) nextRoute.routeAnalysis.authorityApprovals = approvals;
+  return nextRoute;
+};
+
+const applyAuthorityApprovalsToGeofence = (geofenceConfig, approvals, plannedRoute) => {
+  const nextGeofence = cloneJson(geofenceConfig) ?? {};
+  const routeAuthorities = plannedRoute?.routeAnalysis?.authorityAnalysis?.authorities ?? [];
+  const baseRequirements = Array.isArray(nextGeofence.approvalRequirements) && nextGeofence.approvalRequirements.length
+    ? nextGeofence.approvalRequirements
+    : routeAuthorities;
+
+  if (nextGeofence.authorityAnalysis?.authorities) {
+    nextGeofence.authorityAnalysis.authorities = nextGeofence.authorityAnalysis.authorities.map((authority) => applyAuthorityApproval(authority, approvals));
+  }
+
+  nextGeofence.approvalRequirements = baseRequirements.map((authority) => applyAuthorityApproval({
+    authorityType: authority.authorityType,
+    authorityName: authority.authorityName,
+    lgaName: authority.lgaName,
+    absCode: authority.absCode,
+    reference: authority.reference,
+    approvalRequired: true,
+    source: authority.source
+  }, approvals));
+
+  return nextGeofence;
+};
+
+const applyAuthorityApproval = (authority, approvals) => {
+  const key = getAuthorityKey(authority);
+  return {
+    ...authority,
+    approvalRequired: true,
+    approvalStatus: key && approvals[key] ? "APPROVED" : "PENDING"
+  };
+};
+
+const getAuthorityKey = (authority) => String(authority?.reference ?? authority?.absCode ?? authority?.authorityName ?? authority?.lgaName ?? "");
+
+const cloneJson = (value) => {
+  if (!value || typeof value !== "object") return value;
+  return JSON.parse(JSON.stringify(value));
+};
+
+export const updateMissionAuthorityApprovals = async (organisationId, id, approvals, actorRole) => {
+  const mission = await prisma.mission.findFirst({
+    where: { id, organisationId },
+    include: { droneAssignments: true, pilotAssignments: true }
+  });
+  if (!mission) throw new AppError("Mission not found", 404, "MISSION_NOT_FOUND");
+
+  const normalizedApprovals = approvals && typeof approvals === "object" ? approvals : {};
+  const plannedRoute = applyAuthorityApprovalsToRoute(mission.plannedRoute, normalizedApprovals);
+  const geofenceConfig = applyAuthorityApprovalsToGeofence(mission.geofenceConfig, normalizedApprovals, plannedRoute);
+  const status = getStatusForAuthorityApprovals(mission.status, actorRole, { plannedRoute, geofenceConfig });
+
+  await assertMissionResourceAvailability(organisationId, {
+    missionId: mission.id,
+    droneIds: assignedDroneIds(mission),
+    pilotIds: assignedPilotIds(mission),
+    plannedStartAt: mission.plannedStartAt,
+    plannedEndAt: mission.plannedEndAt,
+    status
+  });
+
+  return prisma.mission.update({
+    where: { id },
+    data: { plannedRoute, geofenceConfig, status },
+    include: missionRecordInclude
   });
 };
 
@@ -208,7 +386,8 @@ export const approveMission = async (organisationId, id) => {
 
   const approvedMission = await prisma.mission.update({
     where: { id },
-    data: { status: "APPROVED" }
+    data: { status: "APPROVED" },
+    include: missionRecordInclude
   });
 
   return {
@@ -289,7 +468,12 @@ export const startMission = async (organisationId, id) => {
   const droneIds = assignedDroneIds(mission);
   const pilotIds = assignedPilotIds(mission);
   if (!droneIds.length || !pilotIds.length) throw new AppError("Mission requires drone and pilot assignment", 409, "MISSION_ASSIGNMENT_REQUIRED");
+  const authorityApprovalState = getAuthorityApprovalState(mission.geofenceConfig, mission.plannedRoute?.routeAnalysis?.authorityAnalysis);
+  if (!authorityApprovalState.ready) {
+    throw new AppError("Confirm every required council/authority permission before starting this mission", 409, "MISSION_AUTHORITY_APPROVAL_REQUIRED");
+  }
   if (!mission.riskAssessment) throw new AppError("Risk assessment required before activation", 409, "RISK_ASSESSMENT_REQUIRED");
+  if (mission.status === "AWAITING_AUTHORITY_APPROVAL") throw new AppError("Mission is awaiting council/authority permission confirmation", 409, "MISSION_AUTHORITY_APPROVAL_REQUIRED");
   if (mission.status === "PLANNED") throw new AppError("Mission is awaiting system administrator approval", 409, "MISSION_APPROVAL_REQUIRED");
   if (mission.status !== "RISK_ASSESSMENT_COMPLETED") throw new AppError("Mission cannot be started until risk assessment is completed", 409, "INVALID_MISSION_STATUS");
   const connectorDroneMissingId = mission.droneAssignments
@@ -302,7 +486,8 @@ export const startMission = async (organisationId, id) => {
   return prisma.$transaction(async (tx) => {
     const updatedMission = await tx.mission.update({
       where: { id },
-      data: { status: "ACTIVE", progress: mission.progress }
+      data: { status: "ACTIVE", progress: mission.progress },
+      include: missionRecordInclude
     });
 
     await tx.drone.updateMany({
@@ -327,12 +512,51 @@ export const completeMission = async (organisationId, id) => {
   return prisma.$transaction(async (tx) => {
     const updated = await tx.mission.update({
       where: { id },
-      data: { status: "COMPLETED", progress: 100 }
+      data: { status: "COMPLETED", progress: 100 },
+      include: missionRecordInclude
     });
     if (droneIds.length) {
       await tx.drone.updateMany({ where: { organisationId, id: { in: droneIds } }, data: { status: "AVAILABLE" } });
     }
     return updated;
+  });
+};
+
+export const deleteMission = async (organisationId, id) => {
+  const mission = await prisma.mission.findFirst({
+    where: { id, organisationId },
+    include: { droneAssignments: true }
+  });
+  if (!mission) throw new AppError("Mission not found", 404, "MISSION_NOT_FOUND");
+  if (mission.status === "ACTIVE") {
+    throw new AppError("Complete or abort the active mission before deleting it", 409, "ACTIVE_MISSION_DELETE_BLOCKED");
+  }
+
+  const droneIds = assignedDroneIds(mission);
+
+  return prisma.$transaction(async (tx) => {
+    await tx.telemetryLog.updateMany({
+      where: { organisationId, missionId: id },
+      data: { missionId: null }
+    });
+    await tx.flightLog.updateMany({
+      where: { organisationId, missionId: id },
+      data: { missionId: null }
+    });
+    await tx.incident.updateMany({
+      where: { organisationId, missionId: id },
+      data: { missionId: null }
+    });
+    await tx.mission.delete({ where: { id } });
+
+    if (droneIds.length && ["COMPLETED", "ABORTED", "CANCELLED"].includes(mission.status)) {
+      await tx.drone.updateMany({
+        where: { organisationId, id: { in: droneIds }, status: "IN_MISSION" },
+        data: { status: "AVAILABLE" }
+      });
+    }
+
+    return mission;
   });
 };
 

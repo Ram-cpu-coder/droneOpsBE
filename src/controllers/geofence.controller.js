@@ -1,4 +1,8 @@
 import { prisma } from "../config/prisma.js";
+import { z } from "zod";
+import { AppError } from "../utils/AppError.js";
+import { getSocketServer } from "../sockets/index.js";
+import { writeAudit } from "../services/audit.service.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { created, ok } from "../utils/apiResponse.js";
 
@@ -11,13 +15,16 @@ export const list = asyncHandler(async (req, res) => {
   return ok(res, geofences);
 });
 
-export const create = asyncHandler(async (req, res) => {
-  const geofence = await prisma.geofence.create({
-    data: {
-      organisationId: req.user.organisationId,
-      ...req.body
-    }
-  });
-
-  return created(res, geofence, "Geofence created");
-});
+const zoneSchema=z.object({name:z.string().trim().min(2).max(160),type:z.enum(["RESTRICTED","WARNING","ADVISORY"]),isActive:z.boolean().default(true),polygon:z.array(z.tuple([z.number().min(-180).max(180),z.number().min(-90).max(90)])).min(3).max(500)}).strict();
+const save=async(req,res)=>{
+  const data=zoneSchema.parse(req.body);
+  const organisationId=req.user.organisationId;
+  const id=req.params.id?z.string().uuid().parse(req.params.id):null;
+  if(id&&!await prisma.geofence.findFirst({where:{id,organisationId},select:{id:true}})) throw new AppError("Geofence not found",404,"NOT_FOUND");
+  const geofence=id?await prisma.geofence.update({where:{id},data}):await prisma.geofence.create({data:{...data,organisationId}});
+  await writeAudit({organisationId,actorId:req.user.id,action:id?"GEOFENCE_UPDATED":"GEOFENCE_CREATED",entityType:"GEOFENCE",entityId:geofence.id});
+  getSocketServer()?.to(`organisation:${organisationId}`).emit("geofences:changed",{id:geofence.id});
+  return (id?ok:created)(res,geofence,"Geofence saved");
+};
+export const create=asyncHandler(save);
+export const update=asyncHandler(save);
