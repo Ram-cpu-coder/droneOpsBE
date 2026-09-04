@@ -221,7 +221,7 @@ export const getDroneTelemetry = async (organisationId, droneIdentifier, limit =
   const records = await prisma.telemetryLog.findMany({
     where: { organisationId, droneId: drone.id },
     orderBy: { timestamp: "desc" },
-    take: limit
+    take: Number.isFinite(limit) ? Math.max(1, Math.min(2000, Math.trunc(limit))) : 100
   });
 
   return records.map(toApiTelemetry).reverse();

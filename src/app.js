@@ -8,6 +8,9 @@ import path from "path";
 import { env } from "./config/env.js";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 import { apiRouter } from "./routes/index.js";
+import { prisma } from "./config/prisma.js";
+import { asyncHandler } from "./utils/asyncHandler.js";
+import { ok } from "./utils/apiResponse.js";
 
 export const createApp = () => {
   const app = express();
@@ -20,7 +23,8 @@ export const createApp = () => {
   app.use(cors({
     origin(origin, callback) {
       const isAllowedDevOrigin = env.nodeEnv !== "production" && (isLocalDevOrigin(origin) || isFileDevOrigin(origin));
-      if (!origin || env.clientOrigins.includes(origin) || isAllowedDevOrigin) {
+      const normalizedOrigin = origin?.replace(/\/$/, "");
+      if (!origin || env.clientOrigins.includes(normalizedOrigin) || isAllowedDevOrigin) {
         return callback(null, true);
       }
 
@@ -35,6 +39,10 @@ export const createApp = () => {
   app.use(express.urlencoded({ extended: true }));
   app.use(cookieParser());
   app.use(morgan(env.nodeEnv === "production" ? "combined" : "dev"));
+  app.get("/health", asyncHandler(async (_req, res) => {
+    await prisma.$queryRaw`SELECT 1`;
+    return ok(res, { service: "DroneOps API", status: "healthy", timestamp: new Date().toISOString() });
+  }));
   if (env.nodeEnv !== "production") {
     app.use("/uploads", express.static(path.resolve(env.uploadDir)));
   }
