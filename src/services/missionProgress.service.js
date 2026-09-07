@@ -1,4 +1,5 @@
 import { prisma } from "../config/prisma.js";
+import { addMissionFlightHours } from "./droneFlightHours.service.js";
 import { distanceMeters, normalizeGeoPoint, projectPointOntoRoute } from "../utils/geo.js";
 
 const DEFAULT_WAYPOINT_RADIUS_METERS = 50;
@@ -36,6 +37,18 @@ export const syncMissionProgressFromTelemetry = async (mission, telemetryRecord)
     };
 
     const updatedMission = await prisma.$transaction(async (tx) => {
+      const assignedDrones = getMissionDroneIds(mission);
+      const actualFlightHours = await addMissionFlightHours(tx, {
+        organisationId: mission.organisationId,
+        missionId: mission.id,
+        droneIds: assignedDrones
+      });
+      const totalActualFlightHours = Number(actualFlightHours.reduce((sum, row) => sum + row.durationHours, 0).toFixed(4));
+      const routeProgressWithHours = {
+        ...routeProgress,
+        actualFlightHours,
+        totalActualFlightHours
+      };
       const updated = await tx.mission.update({
         where: { id: mission.id },
         data: {
@@ -43,7 +56,7 @@ export const syncMissionProgressFromTelemetry = async (mission, telemetryRecord)
           progress: 100,
           plannedRoute: {
             ...plannedRoute,
-            progress: routeProgress
+            progress: routeProgressWithHours
           }
         },
         select: {
@@ -56,9 +69,9 @@ export const syncMissionProgressFromTelemetry = async (mission, telemetryRecord)
         }
       });
 
-      if (mission.droneId) {
-        await tx.drone.update({
-          where: { id: mission.droneId },
+      if (assignedDrones.length) {
+        await tx.drone.updateMany({
+          where: { id: { in: assignedDrones } },
           data: { status: "AVAILABLE" }
         });
       }
@@ -71,7 +84,7 @@ export const syncMissionProgressFromTelemetry = async (mission, telemetryRecord)
       missionCode: updatedMission.missionCode,
       progress: updatedMission.progress,
       status: updatedMission.status,
-      routeProgress,
+      routeProgress: updatedMission.plannedRoute?.progress ?? routeProgress,
       source: "TELEMETRY",
       updated: true,
       completed: true
@@ -148,6 +161,13 @@ export const syncMissionProgressFromTelemetry = async (mission, telemetryRecord)
     updated: true
   };
 };
+
+const getMissionDroneIds = (mission) => [
+  ...new Set([
+    mission.droneId,
+    ...(mission.droneAssignments?.map((assignment) => assignment.droneId) ?? [])
+  ].filter(Boolean))
+];
 
 const isCompletionForMissionRun = (mission, telemetryRecord) => {
   const externalMissionId = getTelemetryExternalMissionId(telemetryRecord);

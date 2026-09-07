@@ -19,7 +19,7 @@ export const requireAuth = asyncHandler(async (req, _res, next) => {
     payload = verifyAccessToken(token);
   } catch (error) {
     if (error.name === "TokenExpiredError") {
-      throw new AppError("jwt expired", 401, "JWT_EXPIRED");
+      throw new AppError("Your session has expired. Please sign in again.", 401, "JWT_EXPIRED");
     }
     throw new AppError("Invalid token", 401, "INVALID_TOKEN");
   }

@@ -71,5 +71,10 @@ export const env = {
     ? process.env.COUNCIL_BOUNDARY_LOOKUP_ENABLED === "true"
     : process.env.NODE_ENV !== "production",
   councilBoundaryServiceUrl: process.env.COUNCIL_BOUNDARY_SERVICE_URL ?? "https://portal.spatial.nsw.gov.au/server/rest/services/NSW_Administrative_Boundaries_Theme_multiCRS/FeatureServer/8/query",
+  governmentAirspaceEnabled: process.env.GOVERNMENT_AIRSPACE_ENABLED === "true",
+  governmentAirspaceProvider: process.env.GOVERNMENT_AIRSPACE_PROVIDER ?? "configured-provider",
+  governmentAirspaceUrl: process.env.GOVERNMENT_AIRSPACE_URL,
+  governmentAirspaceApiKey: process.env.GOVERNMENT_AIRSPACE_API_KEY,
+  governmentAirspaceCacheMinutes: Number(process.env.GOVERNMENT_AIRSPACE_CACHE_MINUTES ?? 15),
   prismaQueryLogEnabled: process.env.PRISMA_QUERY_LOG === "true"
 };

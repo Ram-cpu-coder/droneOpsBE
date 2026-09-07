@@ -113,6 +113,11 @@ enum GeofenceType {
   ADVISORY
 }
 
+enum GeofenceSource {
+  MANUAL
+  GOVERNMENT
+}
+
 enum DocumentEntityType {
   DRONE
   MISSION
@@ -521,6 +526,12 @@ model Geofence {
   organisationId  String
   name            String
   type            GeofenceType
+  source          GeofenceSource @default(MANUAL)
+  provider        String?
+  externalId      String?
+  validFrom       DateTime?
+  validTo         DateTime?
+  metadata        Json?
   polygon         Json
   isActive        Boolean      @default(true)
   createdAt       DateTime     @default(now())
@@ -529,6 +540,8 @@ model Geofence {
   organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
 
   @@index([organisationId, type, isActive])
+  @@index([organisationId, source, isActive])
+  @@unique([organisationId, source, provider, externalId])
 }
 
 model Document {

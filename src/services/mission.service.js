@@ -1,6 +1,7 @@
 import { prisma } from "../config/prisma.js";
 import { AppError } from "../utils/AppError.js";
 import { mergeAuthorityAnalysisIntoMissionPlan, resolveRouteAuthorities } from "./councilBoundary.service.js";
+import { addMissionFlightHours } from "./droneFlightHours.service.js";
 import { ensureDroneAssignable, syncMissionDroneStatuses } from "./drone.service.js";
 import { sendMissionApprovalRequestEmail, sendMissionApprovedEmail } from "./email.service.js";
 
@@ -13,6 +14,7 @@ const missionRecordInclude = {
       model: true,
       manufacturer: true,
       serialNumber: true,
+      flightHours: true,
       telemetryProvider: true,
       externalDeviceId: true,
       batteryType: true
@@ -29,6 +31,7 @@ const missionRecordInclude = {
           manufacturer: true,
           serialNumber: true,
           status: true,
+          flightHours: true,
           batteryType: true,
           telemetryProvider: true,
           externalDeviceId: true
@@ -510,9 +513,28 @@ export const completeMission = async (organisationId, id) => {
   }
   const droneIds = assignedDroneIds(mission);
   return prisma.$transaction(async (tx) => {
+    const plannedRoute = mission.plannedRoute && typeof mission.plannedRoute === "object" && !Array.isArray(mission.plannedRoute)
+      ? mission.plannedRoute
+      : {};
+    const actualFlightHours = await addMissionFlightHours(tx, { organisationId, missionId: id, droneIds });
+    const totalActualFlightHours = Number(actualFlightHours.reduce((sum, row) => sum + row.durationHours, 0).toFixed(4));
     const updated = await tx.mission.update({
       where: { id },
-      data: { status: "COMPLETED", progress: 100 },
+      data: {
+        status: "COMPLETED",
+        progress: 100,
+        plannedRoute: {
+          ...plannedRoute,
+          progress: {
+            ...(plannedRoute.progress ?? {}),
+            source: plannedRoute.progress?.source ?? "MANUAL",
+            percent: 100,
+            completedAt: new Date(),
+            actualFlightHours,
+            totalActualFlightHours
+          }
+        }
+      },
       include: missionRecordInclude
     });
     if (droneIds.length) {

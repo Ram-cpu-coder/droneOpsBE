@@ -6,11 +6,12 @@ import { renderPasswordResetFormPage, renderPasswordResetResultPage } from "../t
 import { renderVerificationPage } from "../templates/verificationPage.template.js";
 
 const refreshCookieName = "droneops_refresh";
+const usesCrossSiteCookies = env.nodeEnv === "production" || env.clientPublicUrl.startsWith("https://");
 
 const refreshCookieOptions = {
   httpOnly: true,
-  secure: env.nodeEnv === "production",
-  sameSite: env.nodeEnv === "production" ? "none" : "lax",
+  secure: usesCrossSiteCookies,
+  sameSite: usesCrossSiteCookies ? "none" : "lax",
   path: `${env.apiPrefix}/auth`,
   maxAge: 7 * 24 * 60 * 60 * 1000
 };
