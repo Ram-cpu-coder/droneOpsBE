@@ -111,10 +111,18 @@ export const remove = asyncHandler(async (req, res) => {
         id: req.params.id,
         organisationId: req.user.organisationId
       },
-      select: { id: true }
+      select: { id: true, role: true }
     });
 
     if (!existingUser) throw new AppError("User not found", 404, "USER_NOT_FOUND");
+    if (existingUser.role === "SYSTEM_ADMINISTRATOR") {
+      const administratorCount = await prisma.user.count({
+        where: { organisationId: req.user.organisationId, role: "SYSTEM_ADMINISTRATOR" }
+      });
+      if (administratorCount <= 1) {
+        throw new AppError("Assign another System Administrator before removing this account", 409, "LAST_ADMIN_REQUIRED");
+      }
+    }
 
     const user = await prisma.user.delete({
       where: { id: existingUser.id },

@@ -162,9 +162,16 @@ export const login = async ({ email, password }) => {
   if (!isValid) throw new AppError("Invalid email or password", 401, "INVALID_CREDENTIALS");
   if (!user.isVerified) throw new AppError("Email verification required", 403, "EMAIL_NOT_VERIFIED");
 
-  const tokens = await issueTokens(user);
   const safeUser = await prisma.user.findUnique({ where: { id: user.id }, select: publicUserSelect });
-  return { user: safeUser, ...tokens };
+  // Keep the refresh token stable. A user can have multiple tabs open, and
+  // rotating a single stored hash on every refresh makes those tabs invalidate
+  // one another during normal reloads. Logout still revokes this token by
+  // clearing refreshTokenHash.
+  return {
+    user: safeUser,
+    accessToken: signAccessToken(user),
+    refreshToken
+  };
 };
 
 export const loginWithGoogle = async ({ credential }) => {
@@ -518,7 +525,7 @@ const getOrganisationByJoinCode = async (joinCode) => {
 
 const generateOrganisationJoinCode = async () => {
   for (let attempt = 0; attempt < 10; attempt += 1) {
-    const code = `ORG-${crypto.randomBytes(8).toString("hex").toUpperCase()}`;
+    const code = `ORG-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
     const existing = await prisma.organisation.findUnique({ where: { joinCode: code }, select: { id: true } });
     if (!existing) return code;
   }

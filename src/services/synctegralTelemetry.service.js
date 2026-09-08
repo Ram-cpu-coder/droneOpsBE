@@ -191,12 +191,9 @@ const ingestSynctegralRecordForOrganisation = async (organisationId, record) => 
     })
   ]);
 
-  if (record.mission_id && !mission) {
-    return {
-      skipped: true,
-      reason: `No DroneOps mission is linked to Synctegral mission ${record.mission_id}`
-    };
-  }
+  const missionWarning = record.mission_id && !mission
+    ? `No DroneOps mission is linked to Synctegral mission ${record.mission_id}`
+    : null;
 
   if (existing) {
     const missionProgress = await reconcileExistingTelemetry(organisationId, drone.id, existing, mission, record, timestamp);
@@ -204,6 +201,8 @@ const ingestSynctegralRecordForOrganisation = async (organisationId, record) => 
       skipped: true,
       reason: "Telemetry timestamp already ingested",
       telemetryId: existing.id,
+      missionLinked: Boolean(mission),
+      ...(missionWarning ? { warning: missionWarning } : {}),
       missionProgress
     };
   }
@@ -231,7 +230,12 @@ const ingestSynctegralRecordForOrganisation = async (organisationId, record) => 
       suppressLivePublish: shouldSuppressLivePublish(record, latestTelemetry)
     })
   );
-  return { ingested: true, ...result };
+  return {
+    ingested: true,
+    missionLinked: Boolean(mission),
+    ...(missionWarning ? { warning: missionWarning } : {}),
+    ...result
+  };
 };
 
 const reconcileExistingTelemetry = async (organisationId, droneId, telemetry, mission, record, timestamp) => {

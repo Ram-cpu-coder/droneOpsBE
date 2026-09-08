@@ -95,7 +95,7 @@ export const updateAlertThresholds = asyncHandler(async (req, res) => {
 
 const generateOrganisationJoinCode = async () => {
   for (let attempt = 0; attempt < 10; attempt += 1) {
-    const code = `ORG-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+    const code = `ORG-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
     const existing = await prisma.organisation.findUnique({ where: { joinCode: code }, select: { id: true } });
     if (!existing) return code;
   }

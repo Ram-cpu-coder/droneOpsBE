@@ -1,6 +1,7 @@
 import { prisma } from "../config/prisma.js";
 import { AppError } from "../utils/AppError.js";
 import { storeUploadedFile } from "./fileStorage.service.js";
+import { nextDisplayCode } from "./displaySequence.service.js";
 
 const INCIDENT_EVIDENCE_WINDOW_SECONDS = 5 * 60;
 
@@ -245,18 +246,14 @@ export const deleteIncident = async (organisationId, id) => {
 };
 
 const generateIncidentCode = async (organisationId) => {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const count = await prisma.incident.count({ where: { organisationId } });
-    const candidate = `INC-${String(count + 1 + attempt).padStart(4, "0")}`;
-    const existing = await prisma.incident.findFirst({
-      where: { organisationId, incidentCode: candidate },
-      select: { id: true }
-    });
-
-    if (!existing) return candidate;
-  }
-
-  return `INC-${Date.now().toString().slice(-6)}`;
+  return nextDisplayCode({
+    organisationId,
+    scope: "INCIDENT",
+    prefix: "INC",
+    width: 4,
+    getExistingCodes: async () => (await prisma.incident.findMany({ where: { organisationId }, select: { incidentCode: true } })).map(({ incidentCode }) => incidentCode),
+    exists: async (incidentCode) => Boolean(await prisma.incident.findFirst({ where: { organisationId, incidentCode }, select: { id: true } }))
+  });
 };
 
 const normalizeAssignmentIds = (primaryId, ids = []) => (

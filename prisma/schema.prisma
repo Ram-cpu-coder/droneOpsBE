@@ -158,11 +158,26 @@ model Organisation {
   reports     Report[]
   auditLogs   AuditLog[]
   alertSettings AlertSettings?
+  sequences   OrganisationSequence[]
   notificationReads NotificationRead[]
   missionDroneAssignments MissionDroneAssignment[]
   missionPilotAssignments MissionPilotAssignment[]
   incidentDroneLinks IncidentDroneLink[]
   incidentAssigneeLinks IncidentAssigneeLink[]
+}
+
+model OrganisationSequence {
+  id             String   @id @default(uuid())
+  organisationId String
+  scope          String
+  nextValue      Int      @default(1)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+
+  @@unique([organisationId, scope])
+  @@index([organisationId])
 }
 
 model AlertSettings {

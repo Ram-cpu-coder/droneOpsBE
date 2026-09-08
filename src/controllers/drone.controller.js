@@ -8,6 +8,7 @@ import {
 import * as droneService from "../services/drone.service.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { created, noContent, ok } from "../utils/apiResponse.js";
+import { AppError } from "../utils/AppError.js";
 
 export const list = asyncHandler(async (req, res) => {
   const drones = await droneService.listDrones(req.user.organisationId);
@@ -20,12 +21,22 @@ export const catalog = asyncHandler(async (req, res) => {
 });
 
 export const createCatalogModel = asyncHandler(async (req, res) => {
-  const model = await createDroneModel(req.validated.body);
+  let model;
+  try {
+    model = await createDroneModel(req.validated.body);
+  } catch (error) {
+    throw mapCatalogConflict(error);
+  }
   return created(res, model, "Drone model added");
 });
 
 export const updateCatalogModel = asyncHandler(async (req, res) => {
-  const model = await updateDroneModel(req.params.id, req.validated.body);
+  let model;
+  try {
+    model = await updateDroneModel(req.params.id, req.validated.body);
+  } catch (error) {
+    throw mapCatalogConflict(error);
+  }
   return ok(res, model, "Drone model updated");
 });
 
@@ -35,7 +46,12 @@ export const removeCatalogModel = asyncHandler(async (req, res) => {
 });
 
 export const create = asyncHandler(async (req, res) => {
-  const drone = await droneService.createDrone(req.user.organisationId, req.validated.body);
+  let drone;
+  try {
+    drone = await droneService.createDrone(req.user.organisationId, req.validated.body);
+  } catch (error) {
+    throw mapDroneConflict(error);
+  }
   await writeAudit({
     organisationId: req.user.organisationId,
     actorId: req.user.id,
@@ -52,7 +68,12 @@ export const create = asyncHandler(async (req, res) => {
 });
 
 export const update = asyncHandler(async (req, res) => {
-  const drone = await droneService.updateDrone(req.user.organisationId, req.params.id, req.validated.body);
+  let drone;
+  try {
+    drone = await droneService.updateDrone(req.user.organisationId, req.params.id, req.validated.body);
+  } catch (error) {
+    throw mapDroneConflict(error);
+  }
   await writeAudit({
     organisationId: req.user.organisationId,
     actorId: req.user.id,
@@ -68,6 +89,21 @@ export const update = asyncHandler(async (req, res) => {
   });
   return ok(res, drone, "Drone updated");
 });
+
+const mapDroneConflict = (error) => {
+  if (error?.code !== "P2002") return error;
+
+  const target = Array.isArray(error.meta?.target) ? error.meta.target : [];
+  if (target.includes("serialNumber")) return new AppError("A drone with this serial number already exists", 409, "DUPLICATE_SERIAL_NUMBER");
+  if (target.includes("externalDeviceId")) return new AppError("This Vendor Device ID is already in use", 409, "DUPLICATE_EXTERNAL_DEVICE_ID");
+  if (target.includes("droneCode")) return new AppError("A drone with this ID already exists", 409, "DUPLICATE_DRONE_CODE");
+  return new AppError("This drone identifier is already in use", 409, "DUPLICATE_DRONE_IDENTIFIER");
+};
+
+const mapCatalogConflict = (error) => {
+  if (error?.code !== "P2002") return error;
+  return new AppError("This manufacturer and model already exists in the catalog", 409, "DUPLICATE_CATALOG_MODEL");
+};
 
 export const remove = asyncHandler(async (req, res) => {
   const drone = await droneService.deleteDrone(req.user.organisationId, req.params.id);

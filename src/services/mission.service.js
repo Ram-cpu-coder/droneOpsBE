@@ -4,6 +4,7 @@ import { mergeAuthorityAnalysisIntoMissionPlan, resolveRouteAuthorities } from "
 import { addMissionFlightHours } from "./droneFlightHours.service.js";
 import { ensureDroneAssignable, syncMissionDroneStatuses } from "./drone.service.js";
 import { sendMissionApprovalRequestEmail, sendMissionApprovedEmail } from "./email.service.js";
+import { nextDisplayCode } from "./displaySequence.service.js";
 
 const missionRecordInclude = {
   drone: {
@@ -734,16 +735,12 @@ const syncMissionDroneStatus = async (tx, mission, nextStatus, nextDroneId) => {
 const isSystemAdministrator = (role) => role === "SYSTEM_ADMINISTRATOR";
 
 const generateMissionCode = async (organisationId) => {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const count = await prisma.mission.count({ where: { organisationId } });
-    const candidate = `MIS-${String(count + 1 + attempt).padStart(4, "0")}`;
-    const existing = await prisma.mission.findFirst({
-      where: { organisationId, missionCode: candidate },
-      select: { id: true }
-    });
-
-    if (!existing) return candidate;
-  }
-
-  return `MIS-${Date.now().toString().slice(-6)}`;
+  return nextDisplayCode({
+    organisationId,
+    scope: "MISSION",
+    prefix: "MIS",
+    width: 4,
+    getExistingCodes: async () => (await prisma.mission.findMany({ where: { organisationId }, select: { missionCode: true } })).map(({ missionCode }) => missionCode),
+    exists: async (missionCode) => Boolean(await prisma.mission.findFirst({ where: { organisationId, missionCode }, select: { id: true } }))
+  });
 };

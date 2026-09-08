@@ -35,7 +35,7 @@ operationsRouter.put("/pilots/:id/credentials", requirePermission("pilots:manage
   return ok(res,updated,"Pilot credentials updated");
 }));
 operationsRouter.get("/maintenance", requirePermission("maintenance:read"), asyncHandler(async (req,res) => {
-  return ok(res,await prisma.maintenanceRecord.findMany({where:{organisationId:req.user.organisationId},include:{drone:{select:{id:true,droneCode:true,status:true,flightHours:true}},assignedTo:{select:{id:true,name:true}}},orderBy:{createdAt:"desc"}}));
+  return ok(res,await prisma.maintenanceRecord.findMany({where:{organisationId:req.user.organisationId},include:{drone:{select:{id:true,droneCode:true,status:true,flightHours:true,lastMaintenanceDate:true,nextMaintenanceDate:true}},assignedTo:{select:{id:true,name:true}}},orderBy:{createdAt:"desc"}}));
 }));
 const saveMaintenance = asyncHandler(async (req,res) => {
   const data=maintenanceSchema.parse(req.body);
@@ -51,10 +51,11 @@ const saveMaintenance = asyncHandler(async (req,res) => {
     if(data.assignedToId&&!await tx.user.findFirst({where:{id:data.assignedToId,organisationId},select:{id:true}})) throw new AppError("Assignee not found",404,"NOT_FOUND");
     if(["IN_PROGRESS","COMPLETED"].includes(data.status)&&drone.status==="IN_MISSION") throw new AppError("Finish the active flight before performing maintenance",409,"DRONE_IN_MISSION");
     if(data.status==="COMPLETED"&&!data.correctiveAction?.trim()) throw new AppError("Record the work performed before completing maintenance",400,"WORK_REQUIRED");
-    const payload={...data,completedAt:data.status==="COMPLETED"?new Date():null};
+    const completionDate = data.status === "COMPLETED" ? new Date() : null;
+    const payload={...data,completedAt:completionDate};
     const saved=id?await tx.maintenanceRecord.update({where:{id},data:payload}):await tx.maintenanceRecord.create({data:{...payload,organisationId}});
     if(data.status==="IN_PROGRESS") await tx.drone.update({where:{id:drone.id},data:{status:"MAINTENANCE"}});
-    if(data.status==="COMPLETED") await tx.drone.update({where:{id:drone.id},data:{lastMaintenanceDate:new Date()}});
+    if(data.status==="COMPLETED") await tx.drone.update({where:{id:drone.id},data:{lastMaintenanceDate:completionDate}});
     return tx.maintenanceRecord.findUnique({where:{id:saved.id},include:{drone:{select:{id:true,droneCode:true,status:true,flightHours:true}},assignedTo:{select:{id:true,name:true}}}});
   }, { isolationLevel: "Serializable" });
   await audit(req,id?"MAINTENANCE_UPDATED":"MAINTENANCE_CREATED","MAINTENANCE",record.id);

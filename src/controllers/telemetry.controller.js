@@ -13,6 +13,11 @@ export const latest = asyncHandler(async (req, res) => {
   return ok(res, result, "Latest live telemetry");
 });
 
+export const status = asyncHandler(async (req, res) => {
+  const result = await telemetryService.getTelemetryStatus(req.user.organisationId);
+  return ok(res, result, "Telemetry integration status");
+});
+
 export const byDrone = asyncHandler(async (req, res) => {
   const result = await telemetryService.getDroneTelemetry(req.user.organisationId, req.params.droneId, Number(req.query.limit ?? 100));
   return ok(res, result, "Drone telemetry");

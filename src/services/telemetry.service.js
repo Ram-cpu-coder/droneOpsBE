@@ -1,4 +1,5 @@
 import { prisma } from "../config/prisma.js";
+import { env } from "../config/env.js";
 import { getTelemetryAlertThresholds } from "./alertSettings.service.js";
 import { syncMissionDroneStatuses } from "./drone.service.js";
 import { syncMissionProgressFromTelemetry } from "./missionProgress.service.js";
@@ -37,12 +38,7 @@ const toApiTelemetry = (record) => ({
 export const ingestTelemetry = async (organisationId, payload) => {
   await syncMissionDroneStatuses(organisationId);
 
-  const drone = await prisma.drone.findFirst({
-    where: {
-      organisationId,
-      OR: [{ id: payload.drone_id }, { droneCode: payload.drone_id }]
-    }
-  });
+  const drone = await findTelemetryDrone(organisationId, payload.drone_id);
   if (!drone) throw new AppError("Telemetry drone not found", 404, "TELEMETRY_DRONE_NOT_FOUND");
 
   const mission = await resolveTelemetryMission(organisationId, drone.id, payload.mission_id);
@@ -210,12 +206,7 @@ export const getLatestTelemetry = async (organisationId) => {
 };
 
 export const getDroneTelemetry = async (organisationId, droneIdentifier, limit = 100) => {
-  const drone = await prisma.drone.findFirst({
-    where: {
-      organisationId,
-      OR: [{ id: droneIdentifier }, { droneCode: droneIdentifier }]
-    }
-  });
+  const drone = await findTelemetryDrone(organisationId, droneIdentifier);
   if (!drone) throw new AppError("Drone not found", 404, "DRONE_NOT_FOUND");
 
   const records = await prisma.telemetryLog.findMany({
@@ -225,6 +216,82 @@ export const getDroneTelemetry = async (organisationId, droneIdentifier, limit =
   });
 
   return records.map(toApiTelemetry).reverse();
+};
+
+export const getTelemetryStatus = async (organisationId) => {
+  const [drones, latestTelemetry, linkedTelemetryCount, unlinkedTelemetryCount] = await Promise.all([
+    prisma.drone.findMany({
+      where: { organisationId },
+      select: {
+        id: true,
+        droneCode: true,
+        externalDeviceId: true,
+        telemetryProvider: true,
+        connectorStatus: true,
+        lastTelemetryAt: true
+      },
+      orderBy: { droneCode: "asc" }
+    }),
+    prisma.telemetryLog.findFirst({
+      where: { organisationId },
+      orderBy: { timestamp: "desc" },
+      include: { drone: { select: { id: true, droneCode: true, externalDeviceId: true } } }
+    }),
+    prisma.telemetryLog.count({ where: { organisationId, missionId: { not: null } } }),
+    prisma.telemetryLog.count({ where: { organisationId, missionId: null } })
+  ]);
+
+  const connectorDrones = drones.filter((drone) => drone.telemetryProvider !== "NONE");
+  const configuredDrones = connectorDrones.filter((drone) => Boolean(drone.externalDeviceId));
+
+  return {
+    configured: configuredDrones.length > 0,
+    synctegral: {
+      pollingEnabled: env.synctegralTelemetryEnabled,
+      streamEnabled: env.synctegralStreamEnabled,
+      customerKeyConfigured: Boolean(env.synctegralCustomerKey && env.synctegralCustomerKey !== "your_synctegral_customer_key_here"),
+      simulatorDroneId: env.synctegralDroneId,
+      pollIntervalMs: env.synctegralTelemetryPollIntervalMs,
+      latestUrlConfigured: Boolean(env.synctegralLatestUrl)
+    },
+    connectorDrones: connectorDrones.length,
+    configuredDrones: configuredDrones.length,
+    missingExternalDeviceIds: connectorDrones
+      .filter((drone) => !drone.externalDeviceId)
+      .map((drone) => drone.droneCode),
+    latestTelemetry: latestTelemetry ? toApiTelemetry(latestTelemetry) : null,
+    latestDrone: latestTelemetry?.drone ?? null,
+    replay: {
+      linkedRecords: linkedTelemetryCount,
+      unlinkedRecords: unlinkedTelemetryCount
+    },
+    drones: drones.map((drone) => ({
+      id: drone.id,
+      droneCode: drone.droneCode,
+      externalDeviceId: drone.externalDeviceId,
+      telemetryProvider: drone.telemetryProvider,
+      connectorStatus: drone.connectorStatus,
+      lastTelemetryAt: drone.lastTelemetryAt
+    }))
+  };
+};
+
+const findTelemetryDrone = (organisationId, identifier) => {
+  const droneIdentifier = String(identifier ?? "").trim();
+  if (!droneIdentifier) return null;
+
+  return prisma.drone.findFirst({
+    where: {
+      organisationId,
+      OR: [
+        { id: droneIdentifier },
+        { droneCode: droneIdentifier },
+        { externalDeviceId: droneIdentifier },
+        { serialNumber: droneIdentifier }
+      ]
+    },
+    orderBy: { updatedAt: "desc" }
+  });
 };
 
 export const getMissionReplay = async (organisationId, missionId) => {
@@ -300,6 +367,13 @@ const evaluateTelemetryAlerts = async (organisationId, drone, record) => {
 };
 
 const isTelemetryRecordNewerForLiveView = (candidate, current) => {
+  const candidateTime = new Date(candidate.timestamp).getTime();
+  const currentTime = new Date(current.timestamp).getTime();
+
+  if (Number.isFinite(candidateTime) && Number.isFinite(currentTime) && candidateTime !== currentTime) {
+    return candidateTime > currentTime;
+  }
+
   const candidateSequence = getTelemetrySequence(candidate);
   const currentSequence = getTelemetrySequence(current);
 
@@ -307,7 +381,7 @@ const isTelemetryRecordNewerForLiveView = (candidate, current) => {
     return candidateSequence > currentSequence;
   }
 
-  return new Date(candidate.timestamp).getTime() > new Date(current.timestamp).getTime();
+  return false;
 };
 
 const getTelemetrySequence = (record) => Number(

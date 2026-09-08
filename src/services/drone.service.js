@@ -1,6 +1,7 @@
 import { prisma } from "../config/prisma.js";
 import { AppError } from "../utils/AppError.js";
 import { findDroneModel } from "./droneCatalog.service.js";
+import { nextDisplayCode } from "./displaySequence.service.js";
 
 const assignableStatuses = ["AVAILABLE"];
 const DRONE_STATUS_SYNC_TTL_MS = 5000;
@@ -14,7 +15,7 @@ export const listDrones = async (organisationId) => {
     orderBy: { createdAt: "desc" }
   });
 
-  return attachMissionSummaries(organisationId, drones);
+  return attachMaintenanceState(organisationId, await attachMissionSummaries(organisationId, drones));
 };
 
 export const createDrone = async (organisationId, data) => {
@@ -23,7 +24,7 @@ export const createDrone = async (organisationId, data) => {
     throw new AppError("Select a supported manufacturer and model from the DroneOps catalog", 400, "UNSUPPORTED_DRONE_MODEL");
   }
 
-  const telemetryProvider = data.telemetryProvider && data.telemetryProvider !== "NONE"
+  const telemetryProvider = data.telemetryProvider !== undefined
     ? data.telemetryProvider
     : catalogModel.telemetryProvider;
   const droneCode = data.droneCode || await generateDroneCode(organisationId);
@@ -75,7 +76,7 @@ export const updateDrone = async (organisationId, id, data) => {
     updateData.manufacturer = catalogModel.manufacturer;
     updateData.model = catalogModel.model;
     updateData.batteryType = catalogModel.batteryType;
-    if (!data.telemetryProvider || data.telemetryProvider === "NONE") {
+    if (data.telemetryProvider === undefined) {
       updateData.telemetryProvider = catalogModel.telemetryProvider;
     }
   }
@@ -108,6 +109,22 @@ export const ensureDroneAssignable = async (organisationId, droneId) => {
   if (!assignableStatuses.includes(drone.status)) {
     throw new AppError(`Drone ${drone.droneCode} is not available for mission assignment`, 409, "DRONE_NOT_ASSIGNABLE");
   }
+  if (drone.certificationStatus !== "CERTIFIED") {
+    throw new AppError(`Drone ${drone.droneCode} needs approved certification before mission assignment`, 409, "DRONE_CERTIFICATION_REQUIRED");
+  }
+
+  const certificationExpiry = toDate(drone.certificationExpiry);
+  if (!certificationExpiry) {
+    throw new AppError(`Drone ${drone.droneCode} needs a certification expiry date before mission assignment`, 409, "DRONE_CERTIFICATION_REQUIRED");
+  }
+  if (certificationExpiry < startOfToday()) {
+    throw new AppError(`Drone ${drone.droneCode} certification has expired`, 409, "DRONE_CERTIFICATION_EXPIRED");
+  }
+
+  if (await hasOverdueMaintenance(organisationId, drone)) {
+    throw new AppError(`Drone ${drone.droneCode} is overdue for maintenance and cannot be assigned`, 409, "DRONE_MAINTENANCE_OVERDUE");
+  }
+
   return drone;
 };
 
@@ -261,6 +278,45 @@ const attachMissionSummaries = async (organisationId, drones) => {
   });
 };
 
+const attachMaintenanceState = async (organisationId, drones) => {
+  if (!drones.length) return drones;
+
+  const now = new Date();
+  const overdueRecords = await prisma.maintenanceRecord.findMany({
+    where: {
+      organisationId,
+      droneId: { in: drones.map((drone) => drone.id) },
+      status: { in: ["SCHEDULED", "IN_PROGRESS", "OVERDUE"] },
+      dueAt: { lte: now }
+    },
+    select: { droneId: true },
+    distinct: ["droneId"]
+  });
+  const overdueIds = new Set(overdueRecords.map(({ droneId }) => droneId));
+
+  return drones.map((drone) => ({
+    ...drone,
+    lastServicedDate: drone.lastMaintenanceDate,
+    maintenanceOverdue: overdueIds.has(drone.id) || Boolean(drone.nextMaintenanceDate && drone.nextMaintenanceDate <= now)
+  }));
+};
+
+const hasOverdueMaintenance = async (organisationId, drone) => {
+  if (drone.nextMaintenanceDate && drone.nextMaintenanceDate <= new Date()) return true;
+
+  const overdueRecord = await prisma.maintenanceRecord.findFirst({
+    where: {
+      organisationId,
+      droneId: drone.id,
+      status: { in: ["SCHEDULED", "IN_PROGRESS", "OVERDUE"] },
+      dueAt: { lte: new Date() }
+    },
+    select: { id: true }
+  });
+
+  return Boolean(overdueRecord);
+};
+
 const toDroneMissionSummary = (mission) => ({
   id: mission.id,
   missionCode: mission.missionCode,
@@ -287,22 +343,14 @@ const resolveTelemetryProvider = (data) => {
 };
 
 const generateDroneCode = async (organisationId) => {
-  const count = await prisma.drone.count({ where: { organisationId } });
-
-  for (let index = count + 1; index < count + 1000; index += 1) {
-    const candidate = `DRN-${String(index).padStart(3, "0")}`;
-    const existing = await prisma.drone.findFirst({
-      where: {
-        organisationId,
-        droneCode: candidate
-      },
-      select: { id: true }
-    });
-
-    if (!existing) return candidate;
-  }
-
-  return `DRN-${Date.now().toString().slice(-6)}`;
+  return nextDisplayCode({
+    organisationId,
+    scope: "DRONE",
+    prefix: "DRN",
+    width: 3,
+    getExistingCodes: async () => (await prisma.drone.findMany({ where: { organisationId }, select: { droneCode: true } })).map(({ droneCode }) => droneCode),
+    exists: async (droneCode) => Boolean(await prisma.drone.findFirst({ where: { organisationId, droneCode }, select: { id: true } }))
+  });
 };
 
 const normalizeDroneDates = (data) => {

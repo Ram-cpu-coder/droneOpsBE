@@ -8,11 +8,11 @@ export const idParamSchema = z.object({
 
 export const droneCatalogModelSchema = z.object({
   body: z.object({
-    manufacturer: z.string().min(2),
-    model: z.string().min(2),
-    batteryType: z.string().min(2),
+    manufacturer: z.string().trim().min(2).max(80).regex(/^[A-Za-z0-9][A-Za-z0-9 .&'/-]*$/),
+    model: z.string().trim().min(2).max(120).regex(/^[A-Za-z0-9][A-Za-z0-9 .&'/-]*$/),
+    batteryType: z.string().trim().min(2).max(80),
     telemetryProvider: z.enum(["NONE", "DJI", "AUTEL", "MAVLINK"]).default("NONE"),
-    category: z.string().min(2).optional(),
+    category: z.string().trim().min(2).max(80).optional(),
     sourceUrl: z.string().url().optional(),
     isActive: z.boolean().optional(),
     lastVerifiedAt: z.string().datetime().optional()
@@ -22,24 +22,24 @@ export const droneCatalogModelSchema = z.object({
 });
 
 const dronePayloadSchema = z.object({
-    droneCode: z.string().min(2).optional(),
-    model: z.string().min(2),
-    manufacturer: z.string().optional(),
-    serialNumber: z.string().min(2),
+    droneCode: z.string().trim().min(2).max(24).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/).optional(),
+    model: z.string().trim().min(2).max(120),
+    manufacturer: z.string().trim().max(120).optional(),
+    serialNumber: z.string().trim().min(2).max(100).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/),
     batteryType: z.string().optional(),
-    firmwareVersion: z.string().optional(),
+    firmwareVersion: z.string().trim().max(50).regex(/^[A-Za-z0-9][A-Za-z0-9._+/-]*$/).optional(),
     status: z.enum(["AVAILABLE", "IN_MISSION", "MAINTENANCE", "GROUNDED", "DISCONNECTED", "AWAITING_APPROVAL"]).default("AVAILABLE"),
-    flightHours: z.number().nonnegative().default(0),
+    flightHours: z.number().finite().min(0).max(100000).default(0),
     purchaseDate: z.string().datetime().optional(),
     lastMaintenanceDate: z.string().datetime().optional(),
     nextMaintenanceDate: z.string().datetime().optional(),
-    inspectionThresholdHours: z.number().int().nonnegative().optional(),
+    inspectionThresholdHours: z.number().int().min(0).max(100000).optional(),
     certificationStatus: z.enum(["CERTIFIED", "AWAITING_APPROVAL", "AWAITING_RENEWAL", "EXPIRED", "GROUNDED_PENDING_INSPECTION"]).default("AWAITING_APPROVAL"),
-    certificationReference: z.string().min(2).optional(),
+    certificationReference: z.string().trim().min(2).max(100).optional(),
     certificationExpiry: z.string().datetime().optional(),
-    remoteId: z.string().min(2).optional(),
+    remoteId: z.string().trim().min(2).max(100).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/).optional(),
     telemetryProvider: z.enum(["NONE", "GENERIC_REST", "DJI", "AUTEL", "MAVLINK"]).default("NONE"),
-    externalDeviceId: z.string().optional(),
+    externalDeviceId: z.string().trim().max(120).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/).optional(),
     connectorConfig: z.record(z.unknown()).optional()
   });
 

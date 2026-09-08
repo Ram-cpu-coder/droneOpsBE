@@ -4,6 +4,8 @@ import { prisma } from "../config/prisma.js";
 const SYNCED = "SYNCED";
 const FAILED = "FAILED";
 const SKIPPED = "SKIPPED";
+const RETRYABLE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const SYNC_RETRY_ATTEMPTS = 3;
 
 export const syncMissionToSynctegral = async (organisationId, missionId) => {
   if (!env.synctegralMissionApiEnabled) {
@@ -75,16 +77,13 @@ export const syncMissionToSynctegral = async (organisationId, missionId) => {
 
     const responsePayload = response.payload;
     if (response.status === 409) {
-      const detail = responsePayload?.detail;
-      const existingId = typeof detail === "string"
-        ? detail.match(/^A mission with this external_reference already exists: (\S+)$/)?.[1]
-        : null;
+      const existingId = extractConflictMissionId(responsePayload);
       if (existingId) {
         const existing = await requestSynctegralMissionApi(`${env.synctegralMissionApiUrl}/${encodeURIComponent(existingId)}`, {
           method: "GET",
           headers: { "X-API-Key": env.synctegralCustomerKey }
         });
-        const remoteMission = existing.payload?.mission ?? existing.payload?.data ?? existing.payload;
+        const remoteMission = extractRemoteMission(existing.payload);
         // Recover only a reference verified through the authenticated Mission API.
         if (existing.ok && remoteMission?.external_reference === body.external_reference) {
           await prisma.mission.update({
@@ -111,6 +110,15 @@ export const syncMissionToSynctegral = async (organisationId, missionId) => {
       });
     }
 
+    const routeVerification = verifyRouteEcho(responsePayload, body.route.waypoints);
+    if (routeVerification.status === "MISMATCH") {
+      return markMissionSync(organisationId, missionId, {
+        status: FAILED,
+        synctegralMissionId,
+        error: routeVerification.message
+      });
+    }
+
     const updatedMission = await markMissionSync(organisationId, missionId, {
       status: SYNCED,
       synctegralMissionId
@@ -121,6 +129,7 @@ export const syncMissionToSynctegral = async (organisationId, missionId) => {
       status: SYNCED,
       synctegralMissionId,
       mission: updatedMission,
+      routeVerification,
       response: responsePayload
     };
   } catch (error) {
@@ -152,7 +161,12 @@ export const updateSynctegralMissionStatus = async (organisationId, missionId, s
   if (!mission) return { skipped: true, reason: "Mission not found" };
 
   if (!mission.synctegralMissionId) {
-    return syncMissionToSynctegral(organisationId, missionId);
+    const createResult = await syncMissionToSynctegral(organisationId, missionId);
+    if (!createResult?.synced || !createResult.synctegralMissionId) return createResult;
+
+    return patchSynctegralMission(organisationId, missionId, createResult.synctegralMissionId, {
+      status: mapDroneOpsStatusToSynctegral(status)
+    });
   }
 
   const createResult = { synctegralMissionId: mission.synctegralMissionId };
@@ -269,12 +283,17 @@ const patchSynctegralMission = async (organisationId, missionId, synctegralMissi
       headers: {
         "Content-Type": "application/json",
         "X-API-Key": env.synctegralCustomerKey,
-        "X-Request-ID": `droneops-mission-${missionId}-patch`
+        "X-Request-ID": `droneops-mission-${missionId}-patch`,
+        "Idempotency-Key": `droneops-mission-${missionId}-patch-${synctegralMissionId}`
       },
       body: JSON.stringify(patchBody)
     });
 
     if (!response.ok) {
+      if (response.status === 404) {
+        return recoverMissingSynctegralMission(organisationId, missionId, synctegralMissionId);
+      }
+
       return markMissionSync(organisationId, missionId, {
         status: FAILED,
         synctegralMissionId,
@@ -283,6 +302,15 @@ const patchSynctegralMission = async (organisationId, missionId, synctegralMissi
     }
 
     const responseMissionId = extractSynctegralMissionId(response.payload) ?? synctegralMissionId;
+    const routeVerification = verifyRouteEcho(response.payload, patchBody.route?.waypoints);
+    if (routeVerification.status === "MISMATCH") {
+      return markMissionSync(organisationId, missionId, {
+        status: FAILED,
+        synctegralMissionId: responseMissionId,
+        error: routeVerification.message
+      });
+    }
+
     const updatedMission = await markMissionSync(organisationId, missionId, {
       status: SYNCED,
       synctegralMissionId: responseMissionId
@@ -293,6 +321,7 @@ const patchSynctegralMission = async (organisationId, missionId, synctegralMissi
       status: SYNCED,
       synctegralMissionId: responseMissionId,
       mission: updatedMission,
+      routeVerification,
       response: response.payload
     };
   } catch (error) {
@@ -315,7 +344,7 @@ const buildSynctegralMissionPayload = (mission) => {
   ].filter(Boolean).join(" | ");
 
   return cleanPayload({
-    external_reference: mission.id,
+    external_reference: mission.missionCode ?? mission.id,
     mission_name: mission.name,
     description: description || "DroneOps mission",
     planned_start_utc: mission.plannedStartAt?.toISOString() ?? null,
@@ -383,16 +412,30 @@ const mapDroneOpsStatusToSynctegral = (status = "") => {
 };
 
 const requestSynctegralMissionApi = async (url, options) => {
-  const response = await fetch(url, {
-    ...options,
-    signal: AbortSignal.timeout(env.telemetryTimeoutSeconds * 1000)
-  });
+  let lastError;
 
-  return {
-    ok: response.ok,
-    status: response.status,
-    payload: await readJsonResponse(response)
-  };
+  for (let attempt = 0; attempt < SYNC_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: AbortSignal.timeout(env.telemetryTimeoutSeconds * 1000)
+      });
+      const result = {
+        ok: response.ok,
+        status: response.status,
+        payload: await readJsonResponse(response)
+      };
+
+      if (!RETRYABLE_STATUSES.has(response.status) || attempt === SYNC_RETRY_ATTEMPTS - 1) return result;
+    } catch (error) {
+      lastError = error;
+      if (attempt === SYNC_RETRY_ATTEMPTS - 1) throw error;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 250 * (2 ** attempt)));
+  }
+
+  throw lastError ?? new Error("Synctegral Mission API request failed");
 };
 
 const cleanPayload = (value) => {
@@ -427,7 +470,7 @@ const markMissionSync = async (organisationId, missionId, { status, synctegralMi
       ...(synctegralMissionId ? { synctegralMissionId } : {}),
       synctegralSyncStatus: status,
       synctegralSyncError: error ? String(error).slice(0, 500) : null,
-      synctegralSyncedAt: new Date()
+      ...(status === SYNCED ? { synctegralSyncedAt: new Date() } : {})
     }
   });
 
@@ -446,11 +489,87 @@ const extractSynctegralMissionId = (payload) => (
   payload?.synctegral_mission_id
   ?? payload?.data?.synctegral_mission_id
   ?? payload?.mission?.synctegral_mission_id
+  ?? payload?.data?.mission?.synctegral_mission_id
   ?? payload?.id
   ?? payload?.mission_id
   ?? payload?.data?.id
   ?? payload?.data?.mission_id
+  ?? payload?.mission?.id
+  ?? payload?.mission?.mission_id
+  ?? payload?.data?.mission?.id
+  ?? payload?.data?.mission?.mission_id
   ?? null
+);
+
+const extractConflictMissionId = (payload) => {
+  const explicitId = extractSynctegralMissionId(payload);
+  if (explicitId) return explicitId;
+
+  const detail = payload?.detail ?? payload?.message ?? payload?.error;
+  if (typeof detail !== "string") return null;
+
+  return detail.match(/external_reference already exists:\s*(\S+)/i)?.[1]
+    ?? detail.match(/mission(?:_id| id)?\s*[:=]\s*(\S+)/i)?.[1]
+    ?? null;
+};
+
+const verifyRouteEcho = (payload, expectedWaypoints = []) => {
+  const remoteWaypoints = extractRemoteWaypoints(payload);
+  if (!remoteWaypoints) {
+    return {
+      status: "ACCEPTED_NO_ROUTE_ECHO",
+      expectedWaypoints: expectedWaypoints.length
+    };
+  }
+
+  const expected = normalizeComparableWaypoints(expectedWaypoints);
+  const actual = normalizeComparableWaypoints(remoteWaypoints);
+  const matches = expected.length === actual.length
+    && expected.every((point, index) => (
+      point.sequence === actual[index].sequence
+      && Math.abs(point.latitude - actual[index].latitude) < 0.000001
+      && Math.abs(point.longitude - actual[index].longitude) < 0.000001
+      && Math.abs(point.planned_agl_m - actual[index].planned_agl_m) < 0.01
+    ));
+
+  return matches
+    ? { status: "VERIFIED", expectedWaypoints: expected.length, remoteWaypoints: actual.length }
+    : {
+      status: "MISMATCH",
+      expectedWaypoints: expected.length,
+      remoteWaypoints: actual.length,
+      message: `Synctegral accepted the mission but returned a different route (${expected.length} planned waypoints vs ${actual.length} remote waypoints).`
+    };
+};
+
+const extractRemoteWaypoints = (payload) => (
+  payload?.route?.waypoints
+  ?? payload?.mission?.route?.waypoints
+  ?? payload?.data?.route?.waypoints
+  ?? payload?.data?.mission?.route?.waypoints
+  ?? payload?.waypoints
+  ?? payload?.mission?.waypoints
+  ?? payload?.data?.waypoints
+  ?? payload?.data?.mission?.waypoints
+  ?? null
+);
+
+const normalizeComparableWaypoints = (waypoints) => (
+  (Array.isArray(waypoints) ? waypoints : [])
+    .map((point, index) => ({
+      sequence: Number(point.sequence ?? point.order ?? index + 1),
+      latitude: Number(point.latitude ?? point.lat ?? point.location?.latitude),
+      longitude: Number(point.longitude ?? point.lng ?? point.lon ?? point.location?.longitude),
+      planned_agl_m: Number(point.planned_agl_m ?? point.altitude ?? point.altitudeM ?? point.location?.altitude ?? 60)
+    }))
+    .filter((point) => Number.isFinite(point.latitude) && Number.isFinite(point.longitude))
+);
+
+const extractRemoteMission = (payload) => (
+  payload?.mission
+  ?? payload?.data?.mission
+  ?? payload?.data
+  ?? payload
 );
 
 const readJsonResponse = async (response) => {
@@ -467,6 +586,19 @@ const readJsonResponse = async (response) => {
 const getMissionApiError = (response) => {
   const detail = response.payload?.message ?? response.payload?.detail;
   return typeof detail === "string" ? detail : `Synctegral Mission API request failed with ${response.status}`;
+};
+
+const recoverMissingSynctegralMission = async (organisationId, missionId, staleSynctegralMissionId) => {
+  await prisma.mission.updateMany({
+    where: { id: missionId, organisationId, synctegralMissionId: staleSynctegralMissionId },
+    data: {
+      synctegralMissionId: null,
+      synctegralSyncStatus: FAILED,
+      synctegralSyncError: `Synctegral mission ${staleSynctegralMissionId} was not found; DroneOps will recreate the remote mission.`
+    }
+  });
+
+  return syncMissionToSynctegral(organisationId, missionId);
 };
 
 const normaliseJson = (value) => {

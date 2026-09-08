@@ -8,6 +8,9 @@ const passwordSchema = z.string()
   .regex(/[a-z]/, "Password must include one lowercase letter")
   .regex(/\d/, "Password must include one number")
   .regex(/[^A-Za-z0-9]/, "Password must include one special character");
+const organisationJoinCodeSchema = z.string()
+  .trim()
+  .length(12, "Organisation code must be 12 characters");
 
 const roleAliases = {
   operations_manager: "OPERATIONS_MANAGER",
@@ -57,7 +60,7 @@ export const signupSchema = z.object({
     email: z.string().email(),
     password: passwordSchema,
     organisationMode: z.enum(["join", "create"]).default("join"),
-    organisationJoinCode: z.string().trim().min(4).optional(),
+    organisationJoinCode: organisationJoinCodeSchema.optional(),
     organisationName: z.string().trim().min(2).optional(),
     industry: z.string().optional(),
     profileImageUrl: optionalUrl,
@@ -88,7 +91,7 @@ export const googleCompleteProfileSchema = z.object({
   body: z.preprocess(normaliseOrganisationPayload, z.object({
     credential: z.string().min(20),
     organisationMode: z.enum(["join", "create"]).default("join"),
-    organisationJoinCode: z.string().trim().min(4).optional(),
+    organisationJoinCode: organisationJoinCodeSchema.optional(),
     organisationName: z.string().trim().min(2).optional(),
     industry: z.string().optional(),
     role: roleSchema
@@ -112,7 +115,7 @@ function validateOrganisationAccessMode(data, ctx) {
 
 export const organisationCodeSchema = z.object({
   body: z.object({
-    organisationJoinCode: z.string().trim().min(4)
+    organisationJoinCode: organisationJoinCodeSchema
   }),
   params: z.object({}).optional(),
   query: z.object({}).optional()
