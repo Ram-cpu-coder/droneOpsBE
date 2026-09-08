@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../config/prisma.js";
 import { requireAuth, requirePermission } from "../middleware/auth.js";
+import { hasPermission } from "../constants/roles.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { AppError } from "../utils/AppError.js";
 import { ok, created } from "../utils/apiResponse.js";
@@ -20,17 +21,18 @@ const pilotSchema = z.object({
   certificationExpiry: date,
   licences: z.array(z.object({type:z.string().trim().min(1).max(60), number:z.string().trim().min(1).max(100), expiresAt:date}).strict()).max(20)
 }).strict();
+const pilotAssignableRoles = ["REMOTE_PILOT", "OPERATIONS_MANAGER", "SYSTEM_ADMINISTRATOR"];
 const audit = (req, action, entityType, entityId) => writeAudit({organisationId:req.user.organisationId,actorId:req.user.id,action,entityType,entityId});
 
 operationsRouter.get("/pilots", requirePermission("pilots:read"), asyncHandler(async (req,res) => {
-  const pilots = await prisma.user.findMany({where:{organisationId:req.user.organisationId,role:"REMOTE_PILOT"},select:{id:true,name:true,email:true,isVerified:true,pilotCredentials:true,profileImageUrl:true},orderBy:{name:"asc"}});
+  const pilots = await prisma.user.findMany({where:{organisationId:req.user.organisationId,role:{in:pilotAssignableRoles}},select:{id:true,name:true,email:true,role:true,isVerified:true,pilotCredentials:true,profileImageUrl:true},orderBy:{name:"asc"}});
   return ok(res,pilots);
 }));
 operationsRouter.put("/pilots/:id/credentials", requirePermission("pilots:manage"), asyncHandler(async (req,res) => {
   const credentials=pilotSchema.parse(req.body);
-  const pilot=await prisma.user.findFirst({where:{id:z.string().uuid().parse(req.params.id),organisationId:req.user.organisationId,role:"REMOTE_PILOT"},select:{id:true}});
+  const pilot=await prisma.user.findFirst({where:{id:z.string().uuid().parse(req.params.id),organisationId:req.user.organisationId,role:{in:pilotAssignableRoles}},select:{id:true}});
   if(!pilot) throw new AppError("Pilot not found",404,"NOT_FOUND");
-  const updated=await prisma.user.update({where:{id:pilot.id},data:{pilotCredentials:credentials},select:{id:true,name:true,email:true,isVerified:true,pilotCredentials:true,profileImageUrl:true}});
+  const updated=await prisma.user.update({where:{id:pilot.id},data:{pilotCredentials:credentials},select:{id:true,name:true,email:true,role:true,isVerified:true,pilotCredentials:true,profileImageUrl:true}});
   await audit(req,"PILOT_CREDENTIALS_UPDATED","USER",pilot.id);
   return ok(res,updated,"Pilot credentials updated");
 }));
@@ -41,6 +43,9 @@ const saveMaintenance = asyncHandler(async (req,res) => {
   const data=maintenanceSchema.parse(req.body);
   const organisationId=req.user.organisationId;
   const id=req.params.id ? z.string().uuid().parse(req.params.id) : null;
+  if (!id && req.user.role && data.status !== "SCHEDULED" && !hasPermission(req.user.role, "maintenance:manage")) {
+    throw new AppError("Only maintenance managers can start, complete, cancel, or mark maintenance overdue", 403, "FORBIDDEN");
+  }
   const record=await prisma.$transaction(async tx=>{
     const drone=await tx.drone.findFirst({where:{id:data.droneId,organisationId}});
     if(!drone) throw new AppError("Drone not found",404,"NOT_FOUND");
@@ -61,7 +66,7 @@ const saveMaintenance = asyncHandler(async (req,res) => {
   await audit(req,id?"MAINTENANCE_UPDATED":"MAINTENANCE_CREATED","MAINTENANCE",record.id);
   return (id?ok:created)(res,record,"Maintenance saved");
 });
-operationsRouter.post("/maintenance",requirePermission("maintenance:manage"),saveMaintenance);
+operationsRouter.post("/maintenance",requirePermission("maintenance:read"),saveMaintenance);
 operationsRouter.put("/maintenance/:id",requirePermission("maintenance:manage"),saveMaintenance);
 
 operationsRouter.post("/maintenance/:id/release", requirePermission("maintenance:manage"), asyncHandler(async (req, res) => {

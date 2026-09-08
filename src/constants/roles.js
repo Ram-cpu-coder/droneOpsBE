@@ -20,6 +20,7 @@ export const permissions = {
     "risk:complete",
     "telemetry:read",
     "geofences:read",
+    "maintenance:read",
     "incidents:create",
     "documents:read",
     "audit:read"
@@ -40,6 +41,8 @@ export const permissions = {
     "geofences:read",
     "risk:manage",
     "telemetry:read",
+    "drones:read",
+    "maintenance:read",
     "documents:read",
     "reports:read",
     "audit:read"
@@ -47,6 +50,8 @@ export const permissions = {
   COMPLIANCE_OFFICER: [
     "documents:manage",
     "documents:read",
+    "drones:read",
+    "maintenance:read",
     "reports:manage",
     "reports:read",
     "audit:read"

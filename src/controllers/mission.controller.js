@@ -3,6 +3,7 @@ import * as missionService from "../services/mission.service.js";
 import { syncMissionPlanningToSynctegral, syncMissionToSynctegral, updateSynctegralMissionStatus } from "../services/synctegralMission.service.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { created, ok } from "../utils/apiResponse.js";
+import { AppError } from "../utils/AppError.js";
 
 export const list = asyncHandler(async (req, res) => {
   const missions = await missionService.listMissions(req.user.organisationId);
@@ -74,7 +75,7 @@ export const update = asyncHandler(async (req, res) => {
 });
 
 export const analyseRoute = asyncHandler(async (req, res) => {
-  const authorityPlan = await missionService.analyseMissionRoute(req.validated.body.plannedRoute);
+  const authorityPlan = await missionService.analyseMissionRoute(req.user.organisationId, req.validated.body.plannedRoute);
   return ok(res, authorityPlan, "Mission route analysed");
 });
 
@@ -186,8 +187,19 @@ export const riskAssessment = asyncHandler(async (req, res) => {
 });
 
 export const start = asyncHandler(async (req, res) => {
+  await missionService.ensureMissionCanStart(req.user.organisationId, req.params.id);
+  const synctegralSync = await updateSynctegralMissionStatus(req.user.organisationId, req.params.id, "ACTIVE");
+  await assertSynctegralTransitionSynced({
+    organisationId: req.user.organisationId,
+    actorId: req.user.id,
+    missionId: req.params.id,
+    action: "MISSION_START_SYNCTEGRAL_FAILED",
+    code: "SYNCTEGRAL_MISSION_START_SYNC_FAILED",
+    message: "Synctegral did not accept the mission start. The mission was not started in DroneOps.",
+    synctegralSync
+  });
+
   const mission = await missionService.startMission(req.user.organisationId, req.params.id);
-  const synctegralSync = await updateSynctegralMissionStatus(req.user.organisationId, mission.id, "ACTIVE");
   const responseMission = mergeMissionSyncResult(mission, synctegralSync);
 
   await writeAudit({
@@ -203,12 +215,23 @@ export const start = asyncHandler(async (req, res) => {
       synctegralSync: toAuditSyncResult(synctegralSync)
     }
   });
-  return ok(res, serializeMission(responseMission), "Mission started");
+  return ok(res, serializeMission(responseMission), "Mission started and synced with Synctegral");
 });
 
 export const complete = asyncHandler(async (req, res) => {
+  await missionService.ensureMissionCanComplete(req.user.organisationId, req.params.id);
+  const synctegralSync = await updateSynctegralMissionStatus(req.user.organisationId, req.params.id, "COMPLETED");
+  await assertSynctegralTransitionSynced({
+    organisationId: req.user.organisationId,
+    actorId: req.user.id,
+    missionId: req.params.id,
+    action: "MISSION_COMPLETE_SYNCTEGRAL_FAILED",
+    code: "SYNCTEGRAL_MISSION_COMPLETE_SYNC_FAILED",
+    message: "Synctegral did not accept the mission completion. The mission remains active in DroneOps.",
+    synctegralSync
+  });
+
   const mission = await missionService.completeMission(req.user.organisationId, req.params.id);
-  const synctegralSync = await updateSynctegralMissionStatus(req.user.organisationId, mission.id, "COMPLETED");
   const responseMission = mergeMissionSyncResult(mission, synctegralSync);
 
   await writeAudit({
@@ -224,7 +247,7 @@ export const complete = asyncHandler(async (req, res) => {
       synctegralSync: toAuditSyncResult(synctegralSync)
     }
   });
-  return ok(res, serializeMission(responseMission), "Mission completed");
+  return ok(res, serializeMission(responseMission), "Mission completed and synced with Synctegral");
 });
 
 export const remove = asyncHandler(async (req, res) => {
@@ -334,8 +357,34 @@ const mergeMissionSyncResult = (mission, synctegralSync) => ({
 const toAuditSyncResult = (synctegralSync) => ({
   status: synctegralSync?.status,
   synctegralMissionId: synctegralSync?.synctegralMissionId,
-  error: synctegralSync?.error
+  error: synctegralSync?.error ?? synctegralSync?.reason
 });
+
+const assertSynctegralTransitionSynced = async ({
+  organisationId,
+  actorId,
+  missionId,
+  action,
+  code,
+  message,
+  synctegralSync
+}) => {
+  if (synctegralSync?.synced) return;
+
+  await writeAudit({
+    organisationId,
+    actorId,
+    action,
+    entityType: "MISSION",
+    entityId: missionId,
+    metadata: {
+      synctegralSync: toAuditSyncResult(synctegralSync)
+    }
+  });
+
+  const detail = synctegralSync?.error ?? synctegralSync?.reason;
+  throw new AppError(detail ? `${message} ${detail}` : message, 502, code);
+};
 
 const getMissionCreateAuditAction = (status) => {
   if (status === "AWAITING_AUTHORITY_APPROVAL") return "MISSION_AWAITING_AUTHORITY_APPROVAL";

@@ -6,6 +6,7 @@ const FAILED = "FAILED";
 const SKIPPED = "SKIPPED";
 const RETRYABLE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const SYNC_RETRY_ATTEMPTS = 3;
+const TERMINAL_MISSION_STATUSES = new Set(["COMPLETED", "ABORTED", "CANCELLED"]);
 
 export const syncMissionToSynctegral = async (organisationId, missionId) => {
   if (!env.synctegralMissionApiEnabled) {
@@ -144,6 +145,15 @@ export const syncMissionPlanningToSynctegral = async (organisationId, missionId)
   const mission = await getMissionForSync(organisationId, missionId);
   if (!mission) return { skipped: true, reason: "Mission not found" };
 
+  if (TERMINAL_MISSION_STATUSES.has(mission.status)) {
+    if (mission.synctegralMissionId) return getSynctegralMission(organisationId, missionId);
+
+    return markMissionSync(organisationId, missionId, {
+      status: FAILED,
+      error: "This mission is completed and cannot be created or route-synced in Synctegral."
+    });
+  }
+
   if (!mission.synctegralMissionId) {
     return syncMissionToSynctegral(organisationId, missionId);
   }
@@ -257,7 +267,7 @@ const getMissionForSync = (organisationId, missionId) => (
   })
 );
 
-const patchSynctegralMission = async (organisationId, missionId, synctegralMissionId, body) => {
+const patchSynctegralMission = async (organisationId, missionId, synctegralMissionId, body, options = {}) => {
   // References identify the original creation and must remain unchanged on updates.
   const patchBody = { ...body };
   delete patchBody.external_reference;
@@ -290,8 +300,8 @@ const patchSynctegralMission = async (organisationId, missionId, synctegralMissi
     });
 
     if (!response.ok) {
-      if (response.status === 404) {
-        return recoverMissingSynctegralMission(organisationId, missionId, synctegralMissionId);
+      if (response.status === 404 && options.allowMissingRecovery !== false) {
+        return recoverMissingSynctegralMission(organisationId, missionId, synctegralMissionId, patchBody);
       }
 
       return markMissionSync(organisationId, missionId, {
@@ -513,7 +523,14 @@ const extractConflictMissionId = (payload) => {
     ?? null;
 };
 
-const verifyRouteEcho = (payload, expectedWaypoints = []) => {
+const verifyRouteEcho = (payload, expectedWaypoints) => {
+  if (!Array.isArray(expectedWaypoints)) {
+    return {
+      status: "NOT_CHECKED",
+      reason: "Route was not included in this Synctegral request."
+    };
+  }
+
   const remoteWaypoints = extractRemoteWaypoints(payload);
   if (!remoteWaypoints) {
     return {
@@ -588,7 +605,7 @@ const getMissionApiError = (response) => {
   return typeof detail === "string" ? detail : `Synctegral Mission API request failed with ${response.status}`;
 };
 
-const recoverMissingSynctegralMission = async (organisationId, missionId, staleSynctegralMissionId) => {
+const recoverMissingSynctegralMission = async (organisationId, missionId, staleSynctegralMissionId, patchBody = null) => {
   await prisma.mission.updateMany({
     where: { id: missionId, organisationId, synctegralMissionId: staleSynctegralMissionId },
     data: {
@@ -598,7 +615,14 @@ const recoverMissingSynctegralMission = async (organisationId, missionId, staleS
     }
   });
 
-  return syncMissionToSynctegral(organisationId, missionId);
+  const createResult = await syncMissionToSynctegral(organisationId, missionId);
+  if (!createResult?.synced || !createResult.synctegralMissionId || !patchBody || !Object.keys(patchBody).length) {
+    return createResult;
+  }
+
+  return patchSynctegralMission(organisationId, missionId, createResult.synctegralMissionId, patchBody, {
+    allowMissingRecovery: false
+  });
 };
 
 const normaliseJson = (value) => {

@@ -10,6 +10,10 @@ const notificationPermissions = {
   USER: ["users:read", "*"]
 };
 
+const mutedNotificationActions = new Set([
+  "INCIDENT_EVIDENCE_UPLOADED"
+]);
+
 const getReadableEntityTypes = (role) => {
   if (hasPermission(role, "*")) return Object.keys(notificationPermissions);
 
@@ -32,10 +36,15 @@ const getVisibleAuditWhere = (user, filters = {}) => {
     organisationId: user.organisationId,
     entityType,
     entityId: filters.entityId,
-    NOT: {
-      actorId: user.id,
-      entityType: "USER"
-    }
+    NOT: [
+      {
+        actorId: user.id,
+        entityType: "USER"
+      },
+      {
+        action: { in: Array.from(mutedNotificationActions) }
+      }
+    ]
   };
 };
 

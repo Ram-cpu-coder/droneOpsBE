@@ -16,8 +16,6 @@ const allowedRoles = new Set([
 
 export const list = asyncHandler(async (req, res) => {
   const users = await prisma.user.findMany({
-    // Keep user directories tenant-scoped so one organisation never sees another
-    // organisation's accounts in management screens or assignment dropdowns.
     where: {
       organisationId: req.user.organisationId
     },

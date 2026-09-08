@@ -18,6 +18,7 @@ export const userSelect = {
   email: true,
   role: true,
   profileImageUrl: true,
+  pilotCredentials: true,
   isVerified: true,
   createdAt: true,
   updatedAt: true,

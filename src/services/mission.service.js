@@ -67,8 +67,9 @@ export const createMission = async (organisationId, data, actor) => {
   await Promise.all(droneIds.map((droneId) => ensureDroneAssignable(organisationId, droneId)));
   await Promise.all(pilotIds.map((pilotId) => ensurePilotAssignable(organisationId, pilotId)));
   const missionCode = data.missionCode ?? await generateMissionCode(organisationId);
-  const authorityPlan = await buildMissionAuthorityPlan(data.plannedRoute, data.geofenceConfig);
+  const authorityPlan = await buildMissionAuthorityPlan(organisationId, data.plannedRoute, data.geofenceConfig);
   assertAuthorityAnalysisReady(authorityPlan);
+  assertOperationalGeofenceClear(authorityPlan);
   const status = getInitialMissionStatus(actor.role, authorityPlan);
   await assertMissionResourceAvailability(organisationId, {
     droneIds,
@@ -146,6 +147,9 @@ export const updateMission = async (organisationId, id, data, actorRole) => {
     include: { droneAssignments: true, pilotAssignments: true }
   });
   if (!mission) throw new AppError("Mission not found", 404, "MISSION_NOT_FOUND");
+  if (terminalMissionStatuses.has(mission.status)) {
+    throw new AppError("Completed, aborted, or cancelled missions cannot be edited", 409, "MISSION_TERMINAL_LOCKED");
+  }
   const normalizedData = normalizeMissionInput(data);
   const hasDroneAssignments = data.droneId !== undefined || data.droneIds !== undefined;
   const hasPilotAssignments = data.pilotId !== undefined || data.pilotIds !== undefined;
@@ -190,8 +194,9 @@ export const updateMission = async (organisationId, id, data, actorRole) => {
   });
 
   if (normalizedData.plannedRoute !== undefined) {
-    const authorityPlan = await buildMissionAuthorityPlan(normalizedData.plannedRoute, normalizedData.geofenceConfig ?? mission.geofenceConfig);
+    const authorityPlan = await buildMissionAuthorityPlan(organisationId, normalizedData.plannedRoute, normalizedData.geofenceConfig ?? mission.geofenceConfig);
     assertAuthorityAnalysisReady(authorityPlan);
+    assertOperationalGeofenceClear(authorityPlan);
     normalizedData.plannedRoute = authorityPlan.plannedRoute;
     normalizedData.geofenceConfig = authorityPlan.geofenceConfig;
     if (!normalizedData.status) {
@@ -230,16 +235,21 @@ export const updateMission = async (organisationId, id, data, actorRole) => {
   });
 };
 
-const buildMissionAuthorityPlan = async (plannedRoute, geofenceConfig, options = {}) => {
+const buildMissionAuthorityPlan = async (organisationId, plannedRoute, geofenceConfig, options = {}) => {
   if (!plannedRoute || typeof plannedRoute !== "object" || Array.isArray(plannedRoute)) {
     return { plannedRoute, geofenceConfig };
   }
 
   const authorityAnalysis = await resolveRouteAuthorities(plannedRoute);
-  return mergeAuthorityAnalysisIntoMissionPlan(plannedRoute, geofenceConfig, authorityAnalysis, options);
+  const authorityPlan = mergeAuthorityAnalysisIntoMissionPlan(plannedRoute, geofenceConfig, authorityAnalysis, options);
+  return mergeOperationalGeofenceAnalysis(organisationId, authorityPlan);
 };
 
-export const analyseMissionRoute = async (plannedRoute) => buildMissionAuthorityPlan(plannedRoute, null, { includeGeometry: true });
+export const analyseMissionRoute = async (organisationId, plannedRoute) => {
+  const authorityPlan = await buildMissionAuthorityPlan(organisationId, plannedRoute, null, { includeGeometry: true });
+  assertOperationalGeofenceClear(authorityPlan);
+  return authorityPlan;
+};
 
 const assertAuthorityAnalysisReady = (authorityPlan) => {
   const authorityAnalysis = authorityPlan?.geofenceConfig?.authorityAnalysis;
@@ -247,6 +257,181 @@ const assertAuthorityAnalysisReady = (authorityPlan) => {
 
   throw new AppError(authorityAnalysis.message, 409, "COUNCIL_BOUNDARY_ANALYSIS_REQUIRED");
 };
+
+const assertOperationalGeofenceClear = (authorityPlan) => {
+  const blockingZones = authorityPlan?.geofenceConfig?.operationalGeofenceAnalysis?.blockingZones ?? [];
+  if (!blockingZones.length) return;
+
+  throw new AppError(
+    `Mission route intersects restricted geofence: ${blockingZones.map((zone) => zone.name).join(", ")}`,
+    409,
+    "MISSION_RESTRICTED_GEOFENCE_INTERSECTION"
+  );
+};
+
+const mergeOperationalGeofenceAnalysis = async (organisationId, authorityPlan) => {
+  const routePoints = extractRoutePoints(authorityPlan.plannedRoute);
+  const activeGeofences = await prisma.geofence.findMany({
+    where: {
+      organisationId,
+      isActive: true
+    },
+    select: {
+      id: true,
+      name: true,
+      type: true,
+      source: true,
+      provider: true,
+      polygon: true
+    }
+  });
+  const intersections = activeGeofences
+    .filter((zone) => routeIntersectsPolygon(routePoints, zone.polygon))
+    .map((zone) => ({
+      id: zone.id,
+      name: zone.name,
+      type: zone.type,
+      source: zone.source,
+      provider: zone.provider
+    }));
+  const blockingZones = intersections.filter((zone) => zone.type === "RESTRICTED");
+  const warningZones = intersections.filter((zone) => zone.type !== "RESTRICTED");
+  const status = blockingZones.length ? "BLOCKED" : warningZones.length ? "WARNING" : "CLEAR";
+  const analysis = {
+    status,
+    checkedAt: new Date().toISOString(),
+    checkedGeofences: activeGeofences.length,
+    intersections,
+    blockingZones,
+    warningZones,
+    message: blockingZones.length
+      ? `Route intersects restricted geofence: ${blockingZones.map((zone) => zone.name).join(", ")}`
+      : warningZones.length
+        ? `Route intersects ${warningZones.length} warning/advisory geofence${warningZones.length === 1 ? "" : "s"}.`
+        : "Route does not intersect active operational geofences."
+  };
+
+  const plannedRoute = {
+    ...authorityPlan.plannedRoute,
+    routeAnalysis: {
+      ...(authorityPlan.plannedRoute.routeAnalysis ?? {}),
+      operationalGeofenceAnalysis: analysis
+    }
+  };
+
+  return {
+    plannedRoute,
+    geofenceConfig: {
+      ...(authorityPlan.geofenceConfig ?? {}),
+      operationalGeofenceAnalysis: analysis
+    }
+  };
+};
+
+const extractRoutePoints = (plannedRoute) => {
+  const candidates = Array.isArray(plannedRoute?.waypoints)
+    ? plannedRoute.waypoints
+    : Array.isArray(plannedRoute?.points)
+      ? plannedRoute.points
+      : Array.isArray(plannedRoute?.coordinates)
+        ? plannedRoute.coordinates.map(([longitude, latitude]) => ({ longitude, latitude }))
+        : [];
+
+  return candidates
+    .map((point) => {
+      const latitude = Number(point.latitude ?? point.lat ?? point.location?.latitude);
+      const longitude = Number(point.longitude ?? point.lng ?? point.lon ?? point.location?.longitude);
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+      return { latitude, longitude };
+    })
+    .filter(Boolean);
+};
+
+const routeIntersectsPolygon = (routePoints, polygon) => {
+  const polygonPoints = normalizePolygonPoints(polygon);
+  if (routePoints.length < 2 || polygonPoints.length < 3) return false;
+
+  if (routePoints.some((point) => isPointInPolygon(point, polygonPoints))) return true;
+  if (polygonPoints.some((point) => isPointOnRoute(point, routePoints))) return true;
+
+  for (let routeIndex = 1; routeIndex < routePoints.length; routeIndex += 1) {
+    const routeStart = routePoints[routeIndex - 1];
+    const routeEnd = routePoints[routeIndex];
+
+    for (let polygonIndex = 0; polygonIndex < polygonPoints.length; polygonIndex += 1) {
+      const polygonStart = polygonPoints[polygonIndex];
+      const polygonEnd = polygonPoints[(polygonIndex + 1) % polygonPoints.length];
+      if (segmentsIntersect(routeStart, routeEnd, polygonStart, polygonEnd)) return true;
+    }
+  }
+
+  return false;
+};
+
+const normalizePolygonPoints = (polygon) => {
+  const points = Array.isArray(polygon)
+    ? polygon
+    : Array.isArray(polygon?.coordinates?.[0])
+      ? polygon.coordinates[0]
+      : [];
+
+  return points
+    .map((point) => {
+      const longitude = Number(Array.isArray(point) ? point[0] : point.longitude ?? point.lng ?? point.lon);
+      const latitude = Number(Array.isArray(point) ? point[1] : point.latitude ?? point.lat);
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+      return { latitude, longitude };
+    })
+    .filter(Boolean);
+};
+
+const isPointInPolygon = (point, polygon) => {
+  let inside = false;
+  for (let index = 0, previousIndex = polygon.length - 1; index < polygon.length; previousIndex = index, index += 1) {
+    const current = polygon[index];
+    const previous = polygon[previousIndex];
+    const intersects = ((current.latitude > point.latitude) !== (previous.latitude > point.latitude))
+      && (point.longitude < ((previous.longitude - current.longitude) * (point.latitude - current.latitude)) / (previous.latitude - current.latitude) + current.longitude);
+    if (intersects) inside = !inside;
+  }
+  return inside;
+};
+
+const isPointOnRoute = (point, routePoints) => {
+  for (let index = 1; index < routePoints.length; index += 1) {
+    if (isPointOnSegment(point, routePoints[index - 1], routePoints[index])) return true;
+  }
+  return false;
+};
+
+const segmentsIntersect = (a, b, c, d) => {
+  const o1 = orientation(a, b, c);
+  const o2 = orientation(a, b, d);
+  const o3 = orientation(c, d, a);
+  const o4 = orientation(c, d, b);
+
+  if (o1 !== o2 && o3 !== o4) return true;
+  if (o1 === 0 && isPointOnSegment(c, a, b)) return true;
+  if (o2 === 0 && isPointOnSegment(d, a, b)) return true;
+  if (o3 === 0 && isPointOnSegment(a, c, d)) return true;
+  if (o4 === 0 && isPointOnSegment(b, c, d)) return true;
+  return false;
+};
+
+const orientation = (a, b, c) => {
+  const value = ((b.latitude - a.latitude) * (c.longitude - b.longitude))
+    - ((b.longitude - a.longitude) * (c.latitude - b.latitude));
+  if (Math.abs(value) < 0.000000000001) return 0;
+  return value > 0 ? 1 : 2;
+};
+
+const isPointOnSegment = (point, start, end) => (
+  point.longitude <= Math.max(start.longitude, end.longitude) + 0.000000000001
+  && point.longitude >= Math.min(start.longitude, end.longitude) - 0.000000000001
+  && point.latitude <= Math.max(start.latitude, end.latitude) + 0.000000000001
+  && point.latitude >= Math.min(start.latitude, end.latitude) - 0.000000000001
+  && orientation(start, point, end) === 0
+);
 
 const getInitialMissionStatus = (actorRole, authorityPlan) => (
   getAuthorityApprovalState(authorityPlan.geofenceConfig, authorityPlan.plannedRoute?.routeAnalysis?.authorityAnalysis).ready
@@ -457,7 +642,7 @@ export const saveRiskAssessment = async (organisationId, missionId, data, actorI
   });
 };
 
-export const startMission = async (organisationId, id) => {
+export const ensureMissionCanStart = async (organisationId, id) => {
   const mission = await prisma.mission.findFirst({
     where: { id, organisationId },
     include: {
@@ -469,9 +654,12 @@ export const startMission = async (organisationId, id) => {
     }
   });
   if (!mission) throw new AppError("Mission not found", 404, "MISSION_NOT_FOUND");
+  const currentAuthorityPlan = await buildMissionAuthorityPlan(organisationId, mission.plannedRoute, mission.geofenceConfig);
+  assertOperationalGeofenceClear(currentAuthorityPlan);
   const droneIds = assignedDroneIds(mission);
   const pilotIds = assignedPilotIds(mission);
   if (!droneIds.length || !pilotIds.length) throw new AppError("Mission requires drone and pilot assignment", 409, "MISSION_ASSIGNMENT_REQUIRED");
+  await Promise.all(pilotIds.map((pilotId) => ensurePilotAssignable(organisationId, pilotId)));
   const authorityApprovalState = getAuthorityApprovalState(mission.geofenceConfig, mission.plannedRoute?.routeAnalysis?.authorityAnalysis);
   if (!authorityApprovalState.ready) {
     throw new AppError("Confirm every required council/authority permission before starting this mission", 409, "MISSION_AUTHORITY_APPROVAL_REQUIRED");
@@ -486,6 +674,12 @@ export const startMission = async (organisationId, id) => {
   if (connectorDroneMissingId) {
     throw new AppError("Drone external device ID is required for live telemetry connector", 409, "DRONE_CONNECTOR_ID_REQUIRED");
   }
+
+  return { mission, droneIds, pilotIds };
+};
+
+export const startMission = async (organisationId, id) => {
+  const { mission, droneIds } = await ensureMissionCanStart(organisationId, id);
 
   return prisma.$transaction(async (tx) => {
     const updatedMission = await tx.mission.update({
@@ -503,7 +697,7 @@ export const startMission = async (organisationId, id) => {
   });
 };
 
-export const completeMission = async (organisationId, id) => {
+export const ensureMissionCanComplete = async (organisationId, id) => {
   const mission = await prisma.mission.findFirst({
     where: { id, organisationId },
     include: { droneAssignments: true }
@@ -512,6 +706,11 @@ export const completeMission = async (organisationId, id) => {
   if (mission.status !== "ACTIVE") {
     throw new AppError("Only active missions can be completed", 409, "INVALID_MISSION_STATUS");
   }
+  return mission;
+};
+
+export const completeMission = async (organisationId, id) => {
+  const mission = await ensureMissionCanComplete(organisationId, id);
   const droneIds = assignedDroneIds(mission);
   return prisma.$transaction(async (tx) => {
     const plannedRoute = mission.plannedRoute && typeof mission.plannedRoute === "object" && !Array.isArray(mission.plannedRoute)
@@ -572,7 +771,7 @@ export const deleteMission = async (organisationId, id) => {
     });
     await tx.mission.delete({ where: { id } });
 
-    if (droneIds.length && ["COMPLETED", "ABORTED", "CANCELLED"].includes(mission.status)) {
+    if (droneIds.length && terminalMissionStatuses.has(mission.status)) {
       await tx.drone.updateMany({
         where: { organisationId, id: { in: droneIds }, status: "IN_MISSION" },
         data: { status: "AVAILABLE" }
@@ -600,7 +799,8 @@ const ensurePilotAssignable = async (organisationId, pilotId) => {
     select: {
       id: true,
       name: true,
-      role: true
+      role: true,
+      pilotCredentials: true
     }
   });
 
@@ -608,7 +808,42 @@ const ensurePilotAssignable = async (organisationId, pilotId) => {
     throw new AppError("Select a verified remote pilot before creating the mission", 400, "MISSION_PILOT_REQUIRED");
   }
 
+  const credentials = pilot.pilotCredentials && typeof pilot.pilotCredentials === "object"
+    ? pilot.pilotCredentials
+    : null;
+  const licences = Array.isArray(credentials?.licences) ? credentials.licences : [];
+
+  if (!credentials) {
+    throw new AppError("Pilot credentials are required before mission assignment", 409, "PILOT_CREDENTIALS_REQUIRED");
+  }
+
+  if (!credentials.certificationExpiry || isExpiredCredentialDate(credentials.certificationExpiry)) {
+    throw new AppError("Pilot certification is missing or expired", 409, "PILOT_CERTIFICATION_INVALID");
+  }
+
+  if (!licences.length) {
+    throw new AppError("Pilot licence records are required before mission assignment", 409, "PILOT_LICENCE_REQUIRED");
+  }
+
+  const hasInvalidLicence = licences.some((licence) => (
+    !licence?.type
+    || !licence?.number
+    || !licence?.expiresAt
+    || isExpiredCredentialDate(licence.expiresAt)
+  ));
+
+  if (hasInvalidLicence) {
+    throw new AppError("Pilot licence records must include current licence number and expiry before mission assignment", 409, "PILOT_LICENCE_INVALID");
+  }
+
   return pilot;
+};
+
+const isExpiredCredentialDate = (value) => {
+  const expiry = new Date(value);
+  if (Number.isNaN(expiry.getTime())) return true;
+  expiry.setHours(23, 59, 59, 999);
+  return expiry < new Date();
 };
 
 const normalizeMissionInput = (data = {}) => ({
@@ -716,7 +951,7 @@ const syncMissionDroneStatus = async (tx, mission, nextStatus, nextDroneId) => {
 
   if (!targetDroneIds.length) return;
 
-  if (["COMPLETED", "ABORTED", "CANCELLED"].includes(nextStatus)) {
+  if (terminalMissionStatuses.has(nextStatus)) {
     await tx.drone.updateMany({
       where: { id: { in: targetDroneIds } },
       data: { status: "AVAILABLE" }
@@ -733,6 +968,8 @@ const syncMissionDroneStatus = async (tx, mission, nextStatus, nextDroneId) => {
 };
 
 const isSystemAdministrator = (role) => role === "SYSTEM_ADMINISTRATOR";
+
+const terminalMissionStatuses = new Set(["COMPLETED", "ABORTED", "CANCELLED"]);
 
 const generateMissionCode = async (organisationId) => {
   return nextDisplayCode({
