@@ -23,6 +23,23 @@ const pilotSchema = z.object({
 }).strict();
 const pilotAssignableRoles = ["REMOTE_PILOT", "OPERATIONS_MANAGER", "SYSTEM_ADMINISTRATOR"];
 const audit = (req, action, entityType, entityId) => writeAudit({organisationId:req.user.organisationId,actorId:req.user.id,action,entityType,entityId});
+const DEFAULT_SERVICE_INTERVAL_DAYS = 30;
+
+const addDays = (date, days) => {
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next;
+};
+
+const nextInspectionFromCompletion = (drone, completionDate) => {
+  if (drone.lastMaintenanceDate && drone.nextMaintenanceDate && drone.nextMaintenanceDate > drone.lastMaintenanceDate) {
+    const intervalMs = drone.nextMaintenanceDate.getTime() - drone.lastMaintenanceDate.getTime();
+    const intervalDays = Math.max(1, Math.round(intervalMs / 86400000));
+    return addDays(completionDate, intervalDays);
+  }
+
+  return addDays(completionDate, DEFAULT_SERVICE_INTERVAL_DAYS);
+};
 
 operationsRouter.get("/pilots", requirePermission("pilots:read"), asyncHandler(async (req,res) => {
   const pilots = await prisma.user.findMany({where:{organisationId:req.user.organisationId,role:{in:pilotAssignableRoles}},select:{id:true,name:true,email:true,role:true,isVerified:true,pilotCredentials:true,profileImageUrl:true},orderBy:{name:"asc"}});
@@ -60,8 +77,8 @@ const saveMaintenance = asyncHandler(async (req,res) => {
     const payload={...data,completedAt:completionDate};
     const saved=id?await tx.maintenanceRecord.update({where:{id},data:payload}):await tx.maintenanceRecord.create({data:{...payload,organisationId}});
     if(data.status==="IN_PROGRESS") await tx.drone.update({where:{id:drone.id},data:{status:"MAINTENANCE"}});
-    if(data.status==="COMPLETED") await tx.drone.update({where:{id:drone.id},data:{lastMaintenanceDate:completionDate}});
-    return tx.maintenanceRecord.findUnique({where:{id:saved.id},include:{drone:{select:{id:true,droneCode:true,status:true,flightHours:true}},assignedTo:{select:{id:true,name:true}}}});
+    if(data.status==="COMPLETED") await tx.drone.update({where:{id:drone.id},data:{lastMaintenanceDate:completionDate,nextMaintenanceDate:nextInspectionFromCompletion(drone,completionDate)}});
+    return tx.maintenanceRecord.findUnique({where:{id:saved.id},include:{drone:{select:{id:true,droneCode:true,status:true,flightHours:true,lastMaintenanceDate:true,nextMaintenanceDate:true}},assignedTo:{select:{id:true,name:true}}}});
   }, { isolationLevel: "Serializable" });
   await audit(req,id?"MAINTENANCE_UPDATED":"MAINTENANCE_CREATED","MAINTENANCE",record.id);
   return (id?ok:created)(res,record,"Maintenance saved");

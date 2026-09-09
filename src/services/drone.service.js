@@ -5,6 +5,7 @@ import { nextDisplayCode } from "./displaySequence.service.js";
 
 const assignableStatuses = ["AVAILABLE"];
 const DRONE_STATUS_SYNC_TTL_MS = 5000;
+const TELEMETRY_ASSIGNMENT_STALE_MS = 5 * 60 * 1000;
 const droneStatusSyncState = new Map();
 
 export const listDrones = async (organisationId) => {
@@ -123,6 +124,10 @@ export const ensureDroneAssignable = async (organisationId, droneId) => {
 
   if (await hasOverdueMaintenance(organisationId, drone)) {
     throw new AppError(`Drone ${drone.droneCode} is overdue for maintenance and cannot be assigned`, 409, "DRONE_MAINTENANCE_OVERDUE");
+  }
+
+  if (hasTelemetryAssignmentBlock(drone)) {
+    throw new AppError(`Drone ${drone.droneCode} telemetry link is offline or stale`, 409, "DRONE_TELEMETRY_UNAVAILABLE");
   }
 
   return drone;
@@ -315,6 +320,17 @@ const hasOverdueMaintenance = async (organisationId, drone) => {
   });
 
   return Boolean(overdueRecord);
+};
+
+const hasTelemetryAssignmentBlock = (drone) => {
+  if (!drone.telemetryProvider || ["NONE", "GENERIC_REST"].includes(drone.telemetryProvider)) return false;
+  if (drone.connectorStatus === "OFFLINE") return true;
+  if (drone.connectorStatus !== "ONLINE") return false;
+  if (!drone.lastTelemetryAt) return true;
+
+  const lastTelemetryAt = new Date(drone.lastTelemetryAt);
+  if (Number.isNaN(lastTelemetryAt.getTime())) return true;
+  return Date.now() - lastTelemetryAt.getTime() > TELEMETRY_ASSIGNMENT_STALE_MS;
 };
 
 const toDroneMissionSummary = (mission) => ({
