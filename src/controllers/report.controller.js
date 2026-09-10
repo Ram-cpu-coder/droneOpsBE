@@ -97,8 +97,7 @@ export const generate = asyncHandler(async (req, res) => {
   const [drones, missions, incidents, maintenance] = await Promise.all([
     prisma.drone.findMany({
       where: {
-        organisationId: req.user.organisationId,
-        ...buildDateWhere("createdAt", scope)
+        organisationId: req.user.organisationId
       },
       orderBy: { createdAt: "desc" },
       take
@@ -350,8 +349,7 @@ const buildReportCounts = async (organisationId, scope) => {
   const [drones, missions, incidents, maintenance] = await Promise.all([
     prisma.drone.count({
       where: {
-        organisationId,
-        ...buildDateWhere("createdAt", scope)
+        organisationId
       }
     }),
     prisma.mission.count({

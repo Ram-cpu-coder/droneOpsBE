@@ -1,5 +1,6 @@
 import { prisma } from "../config/prisma.js";
 import { AppError } from "../utils/AppError.js";
+import { defaultDroneModelCatalog } from "../constants/droneCatalogSeed.js";
 
 const catalogOrder = [
   { manufacturer: "asc" },
@@ -7,6 +8,8 @@ const catalogOrder = [
 ];
 
 export const listDroneModelCatalog = async ({ includeInactive = false } = {}) => {
+  await ensureDefaultCatalog();
+
   const rows = await prisma.droneModelCatalog.findMany({
     where: includeInactive ? undefined : { isActive: true },
     orderBy: catalogOrder
@@ -17,6 +20,7 @@ export const listDroneModelCatalog = async ({ includeInactive = false } = {}) =>
 
 export const findDroneModel = async (manufacturer, model) => {
   if (!manufacturer || !model) return null;
+  await ensureDefaultCatalog();
 
   return prisma.droneModelCatalog.findFirst({
     where: {
@@ -25,6 +29,38 @@ export const findDroneModel = async (manufacturer, model) => {
       isActive: true
     }
   });
+};
+
+const ensureDefaultCatalog = async () => {
+  const activeCount = await prisma.droneModelCatalog.count({ where: { isActive: true } });
+  if (activeCount > 0) return;
+
+  const now = new Date();
+  await prisma.$transaction(
+    defaultDroneModelCatalog.map((item) => (
+      prisma.droneModelCatalog.upsert({
+        where: {
+          manufacturer_model: {
+            manufacturer: item.manufacturer,
+            model: item.model
+          }
+        },
+        update: {
+          batteryType: item.batteryType,
+          telemetryProvider: item.telemetryProvider,
+          category: item.category,
+          sourceUrl: item.sourceUrl,
+          isActive: true,
+          lastVerifiedAt: now
+        },
+        create: {
+          ...item,
+          isActive: true,
+          lastVerifiedAt: now
+        }
+      })
+    ))
+  );
 };
 
 export const createDroneModel = async (data) => {

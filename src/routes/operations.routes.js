@@ -71,6 +71,7 @@ const saveMaintenance = asyncHandler(async (req,res) => {
     if(previous&&previous.droneId!==data.droneId) throw new AppError("A maintenance record cannot be moved to another drone",409,"INVALID_DRONE");
     if(previous&&["COMPLETED","CANCELLED"].includes(previous.status)) throw new AppError("Closed maintenance records cannot be edited",409,"MAINTENANCE_CLOSED");
     if(data.assignedToId&&!await tx.user.findFirst({where:{id:data.assignedToId,organisationId},select:{id:true}})) throw new AppError("Assignee not found",404,"NOT_FOUND");
+    if(["SCHEDULED","IN_PROGRESS","OVERDUE"].includes(data.status)&&!data.dueAt) throw new AppError("Select a drone and due date before saving maintenance",400,"MAINTENANCE_DUE_DATE_REQUIRED");
     if(["IN_PROGRESS","COMPLETED"].includes(data.status)&&drone.status==="IN_MISSION") throw new AppError("Finish the active flight before performing maintenance",409,"DRONE_IN_MISSION");
     if(data.status==="COMPLETED"&&!data.correctiveAction?.trim()) throw new AppError("Record the work performed before completing maintenance",400,"WORK_REQUIRED");
     const completionDate = data.status === "COMPLETED" ? new Date() : null;
