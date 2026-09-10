@@ -136,7 +136,7 @@ export const signup = async (payload) => {
     user,
     emailSent: emailStatus.sent,
     emailError: emailStatus.error,
-    devVerificationToken: !emailStatus.sent && process.env.NODE_ENV !== "production" ? verificationToken : undefined
+    devVerificationToken: !emailStatus.sent && env.nodeEnv !== "production" ? verificationToken : undefined
   };
 };
 
@@ -162,15 +162,11 @@ export const login = async ({ email, password }) => {
   if (!isValid) throw new AppError("Invalid email or password", 401, "INVALID_CREDENTIALS");
   if (!user.isVerified) throw new AppError("Email verification required", 403, "EMAIL_NOT_VERIFIED");
 
+  const tokens = await issueTokens(user);
   const safeUser = await prisma.user.findUnique({ where: { id: user.id }, select: publicUserSelect });
-  // Keep the refresh token stable. A user can have multiple tabs open, and
-  // rotating a single stored hash on every refresh makes those tabs invalidate
-  // one another during normal reloads. Logout still revokes this token by
-  // clearing refreshTokenHash.
   return {
     user: safeUser,
-    accessToken: signAccessToken(user),
-    refreshToken
+    ...tokens
   };
 };
 
@@ -393,7 +389,7 @@ export const requestPasswordReset = async ({ email }) => {
     emailSent: emailStatus.sent,
     emailError: emailStatus.error,
     cooldownSeconds: 120,
-    devResetToken: !emailStatus.sent && process.env.NODE_ENV !== "production" ? resetToken : undefined
+    devResetToken: !emailStatus.sent && env.nodeEnv !== "production" ? resetToken : undefined
   };
 };
 

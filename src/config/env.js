@@ -9,8 +9,11 @@ dotenv.config();
 });
 
 const requiredInProduction = ["DATABASE_URL", "JWT_ACCESS_SECRET", "JWT_REFRESH_SECRET"];
+const explicitNodeEnv = process.env.NODE_ENV?.trim();
+const hostedRuntime = Boolean(process.env.RENDER || process.env.K_SERVICE || process.env.FLY_APP_NAME || process.env.RAILWAY_ENVIRONMENT);
+const nodeEnv = explicitNodeEnv || (hostedRuntime ? "production" : "development");
 
-if (process.env.NODE_ENV === "production") {
+if (nodeEnv === "production") {
   const missing = requiredInProduction.filter((key) => !process.env[key]);
   if (missing.length) {
     throw new Error(`Missing required production env vars: ${missing.join(", ")}`);
@@ -23,7 +26,7 @@ if (process.env.NODE_ENV === "production") {
 }
 
 export const env = {
-  nodeEnv: process.env.NODE_ENV ?? "development",
+  nodeEnv,
   port: Number(process.env.PORT ?? 5000),
   apiPrefix: process.env.API_PREFIX ?? "/api/v1",
   clientOrigins: (process.env.CLIENT_ORIGIN ?? "http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:5178,http://localhost:5178,https://droneops-five.vercel.app")
@@ -34,7 +37,7 @@ export const env = {
   databaseUrl: process.env.DATABASE_URL,
   databaseSslRejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED
     ? process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== "false"
-    : process.env.NODE_ENV === "production",
+    : nodeEnv === "production",
   jwtAccessSecret: process.env.JWT_ACCESS_SECRET ?? "dev-access-secret-change-me",
   jwtRefreshSecret: process.env.JWT_REFRESH_SECRET ?? "dev-refresh-secret-change-me",
   jwtAccessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN ?? "15m",
@@ -69,7 +72,7 @@ export const env = {
   synctegralMissionApiUrl: process.env.SYNCTEGRAL_MISSION_API_URL ?? `${process.env.SYNCTEGRAL_API_BASE_URL ?? "https://synctegral-droneops-api.onrender.com"}/v1/missions`,
   councilBoundaryLookupEnabled: process.env.COUNCIL_BOUNDARY_LOOKUP_ENABLED
     ? process.env.COUNCIL_BOUNDARY_LOOKUP_ENABLED === "true"
-    : process.env.NODE_ENV !== "production",
+    : nodeEnv !== "production",
   councilBoundaryServiceUrl: process.env.COUNCIL_BOUNDARY_SERVICE_URL ?? "https://portal.spatial.nsw.gov.au/server/rest/services/NSW_Administrative_Boundaries_Theme_multiCRS/FeatureServer/8/query",
   governmentAirspaceEnabled: process.env.GOVERNMENT_AIRSPACE_ENABLED === "true",
   governmentAirspaceProvider: process.env.GOVERNMENT_AIRSPACE_PROVIDER ?? "configured-provider",

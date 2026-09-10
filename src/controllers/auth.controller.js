@@ -21,7 +21,8 @@ const attachRefreshCookie = (res, result) => {
 
   res.cookie(refreshCookieName, result.refreshToken, refreshCookieOptions);
 
-  return result;
+  const { refreshToken, ...responseBody } = result;
+  return responseBody;
 };
 
 const clearRefreshCookie = (res) => {

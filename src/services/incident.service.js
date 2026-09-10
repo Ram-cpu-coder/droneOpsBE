@@ -109,7 +109,8 @@ export const uploadIncidentEvidence = async (organisationId, uploadedById, incid
     organisationId,
     entityType: "incidents",
     entityCode: incident.incidentCode ?? incident.id,
-    subfolder: "evidence"
+    subfolder: "evidence",
+    access: "authenticated"
   });
 
   const document = await prisma.document.create({

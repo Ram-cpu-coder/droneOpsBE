@@ -14,6 +14,7 @@ import * as telemetryController from "../controllers/telemetry.controller.js";
 import { telemetryRouter } from "./telemetry.routes.js";
 import { userRouter } from "./user.routes.js";
 import { requireAuth, requirePermission } from "../middleware/auth.js";
+import { telemetryReadRateLimiter } from "../middleware/rateLimiters.js";
 
 export const apiRouter = Router();
 
@@ -28,6 +29,6 @@ apiRouter.use("/settings", settingsRouter);
 apiRouter.use("/drones", droneRouter);
 apiRouter.use("/geofences", geofenceRouter);
 apiRouter.use("/incidents", incidentRouter);
-apiRouter.get("/missions/:id/replay", requireAuth, requirePermission("telemetry:read"), telemetryController.replay);
+apiRouter.get("/missions/:id/replay", telemetryReadRateLimiter, requireAuth, requirePermission("telemetry:read"), telemetryController.replay);
 apiRouter.use("/missions", missionRouter);
 apiRouter.use("/telemetry", telemetryRouter);

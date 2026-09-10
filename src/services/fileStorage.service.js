@@ -32,6 +32,7 @@ const uploadToCloudinary = async (file, context) => {
   const uploadOptions = {
     folder,
     resource_type: resourceType,
+    type: context.access === "authenticated" ? "authenticated" : "upload",
     use_filename: true,
     unique_filename: true,
     filename_override: originalFilename
@@ -55,7 +56,9 @@ const uploadToCloudinary = async (file, context) => {
   });
 
   return {
-    fileUrl: result.secure_url,
+    fileUrl: context.access === "authenticated"
+      ? cloudinary.url(result.public_id, { resource_type: result.resource_type, type: "authenticated", sign_url: true, secure: true })
+      : result.secure_url,
     storageProvider: "cloudinary",
     publicId: result.public_id,
     resourceType: result.resource_type,
