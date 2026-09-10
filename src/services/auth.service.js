@@ -135,7 +135,7 @@ export const signup = async (payload) => {
   return {
     user,
     emailSent: emailStatus.sent,
-    emailError: emailStatus.error,
+    emailError: emailStatus.error ?? emailStatus.reason,
     devVerificationToken: !emailStatus.sent && env.nodeEnv !== "production" ? verificationToken : undefined
   };
 };
@@ -385,9 +385,24 @@ export const requestPasswordReset = async ({ email }) => {
     console.warn(`[mail] Password reset email failed for ${user.email}: ${error.message}`);
   }
 
+  if (!emailStatus.sent) {
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        resetToken: null,
+        resetTokenExpiresAt: null,
+        passwordResetRequestedAt: null
+      }
+    });
+
+    if (env.nodeEnv === "production") {
+      throw new AppError("Password reset email could not be sent. Please try again later.", 503, "PASSWORD_RESET_EMAIL_UNAVAILABLE");
+    }
+  }
+
   return {
     emailSent: emailStatus.sent,
-    emailError: emailStatus.error,
+    emailError: emailStatus.error ?? emailStatus.reason,
     cooldownSeconds: 120,
     devResetToken: !emailStatus.sent && env.nodeEnv !== "production" ? resetToken : undefined
   };

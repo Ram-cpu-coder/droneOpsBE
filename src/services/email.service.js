@@ -2,6 +2,13 @@ import nodemailer from "nodemailer";
 import { env } from "../config/env.js";
 
 const isSmtpConfigured = () => Boolean(env.brevoSmtpHost && env.brevoSmtpPort && env.brevoSmtpUser && env.brevoSmtpPass);
+const isBrevoApiConfigured = () => Boolean(env.brevoApiKey && env.mailFrom);
+
+const getSender = () => {
+  const match = env.mailFrom.match(/^(.*?)\s*<([^>]+)>$/);
+  if (!match) return { email: env.mailFrom };
+  return { name: match[1].trim(), email: match[2].trim() };
+};
 
 const getTransporter = () => {
   if (!isSmtpConfigured()) return null;
@@ -20,7 +27,41 @@ const getTransporter = () => {
   });
 };
 
+const sendMailWithBrevoApi = async ({ to, subject, text, html }) => {
+  const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "api-key": env.brevoApiKey,
+      "content-type": "application/json"
+    },
+    signal: AbortSignal.timeout(15000),
+    body: JSON.stringify({
+      sender: getSender(),
+      to: [{ email: to }],
+      subject,
+      textContent: text,
+      htmlContent: html
+    })
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.message || `Brevo API returned ${response.status}`);
+  }
+
+  return {
+    sent: true,
+    skipped: false,
+    messageId: payload.messageId
+  };
+};
+
 const sendMail = async ({ to, subject, text, html }) => {
+  if (isBrevoApiConfigured()) {
+    return sendMailWithBrevoApi({ to, subject, text, html });
+  }
+
   const transporter = getTransporter();
   if (!transporter) {
     return { sent: false, skipped: true, reason: "SMTP is not configured" };

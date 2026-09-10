@@ -12,6 +12,23 @@ const requiredInProduction = ["DATABASE_URL", "JWT_ACCESS_SECRET", "JWT_REFRESH_
 const explicitNodeEnv = process.env.NODE_ENV?.trim();
 const hostedRuntime = Boolean(process.env.RENDER || process.env.K_SERVICE || process.env.FLY_APP_NAME || process.env.RAILWAY_ENVIRONMENT);
 const nodeEnv = explicitNodeEnv || (hostedRuntime ? "production" : "development");
+const configuredClientPublicUrl = process.env.CLIENT_PUBLIC_URL?.trim();
+const defaultClientPublicUrl = nodeEnv === "production"
+  ? "https://droneops-five.vercel.app"
+  : "http://127.0.0.1:5173";
+const clientPublicUrl = nodeEnv === "production" && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i.test(configuredClientPublicUrl ?? "")
+  ? defaultClientPublicUrl
+  : configuredClientPublicUrl || defaultClientPublicUrl;
+const configuredMailFrom = process.env.MAIL_FROM?.trim();
+const mailFrom = configuredMailFrom || (process.env.BREVO_SMTP_USER?.trim()
+  ? `DroneOps <${process.env.BREVO_SMTP_USER.trim()}>`
+  : "DroneOps <no-reply@droneops.local>");
+const apiPrefix = process.env.API_PREFIX ?? "/api/v1";
+const configuredApiPublicUrl = process.env.API_PUBLIC_URL?.trim();
+const defaultApiPublicUrl = nodeEnv === "production" && process.env.RENDER_EXTERNAL_URL
+  ? `${process.env.RENDER_EXTERNAL_URL.replace(/\/+$/, "")}${apiPrefix}`
+  : `http://localhost:${Number(process.env.PORT ?? 5000)}${apiPrefix}`;
+const apiPublicUrl = configuredApiPublicUrl || defaultApiPublicUrl;
 
 if (nodeEnv === "production") {
   const missing = requiredInProduction.filter((key) => !process.env[key]);
@@ -28,14 +45,12 @@ if (nodeEnv === "production") {
 export const env = {
   nodeEnv,
   port: Number(process.env.PORT ?? 5000),
-  apiPrefix: process.env.API_PREFIX ?? "/api/v1",
+  apiPrefix,
   clientOrigins: (process.env.CLIENT_ORIGIN ?? "http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:5178,http://localhost:5178,https://droneops-five.vercel.app")
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean),
-  clientPublicUrl: process.env.CLIENT_PUBLIC_URL ?? (nodeEnv === "production"
-    ? "https://droneops-five.vercel.app"
-    : "http://127.0.0.1:5173"),
+  clientPublicUrl,
   databaseUrl: process.env.DATABASE_URL,
   databaseSslRejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED
     ? process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== "false"
@@ -53,8 +68,9 @@ export const env = {
   brevoSmtpPort: Number(process.env.BREVO_SMTP_PORT ?? 587),
   brevoSmtpUser: process.env.BREVO_SMTP_USER,
   brevoSmtpPass: process.env.BREVO_SMTP_PASS,
-  mailFrom: process.env.MAIL_FROM ?? "DroneOps <no-reply@droneops.local>",
-  apiPublicUrl: process.env.API_PUBLIC_URL ?? `http://localhost:${Number(process.env.PORT ?? 5000)}${process.env.API_PREFIX ?? "/api/v1"}`,
+  brevoApiKey: process.env.BREVO_API_KEY,
+  mailFrom,
+  apiPublicUrl,
   googleClientId: process.env.GOOGLE_CLIENT_ID,
   cloudinaryCloudName: process.env.CLOUDINARY_CLOUD_NAME,
   cloudinaryApiKey: process.env.CLOUDINARY_API_KEY,
