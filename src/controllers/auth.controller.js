@@ -154,7 +154,7 @@ export const resetPassword = asyncHandler(async (req, res) => {
     });
 
     if (wantsJson) {
-      return ok(res, { success: true }, "Password updated");
+      return ok(res, { success: true }, "Your password has been changed. You can now sign in.");
     }
 
     return res

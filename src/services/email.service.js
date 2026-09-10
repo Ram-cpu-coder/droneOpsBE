@@ -273,6 +273,34 @@ export const sendPasswordResetEmail = async ({ user, resetToken }) => {
   });
 };
 
+export const sendPasswordChangedEmail = async ({ user }) => {
+  return sendMail({
+    to: user.email,
+    subject: "Your DroneOps password was changed",
+    text: [
+      `Hi ${user.name},`,
+      "",
+      "Your DroneOps password was changed successfully.",
+      "If you did not make this change, contact your organization administrator immediately."
+    ].join("\n"),
+    html: `
+      <!doctype html>
+      <html>
+        <body style="margin:0;padding:32px 14px;background:#08111f;font-family:Arial,Helvetica,sans-serif;color:#f8fbff;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;margin:0 auto;background:#0e1828;border:1px solid #22314a;border-radius:18px;">
+            <tr><td style="padding:32px;">
+              <div style="font-size:30px;font-weight:800;">DRONE <span style="color:#5a95ff;">OPS</span></div>
+              <h1 style="margin:28px 0 12px;font-size:26px;">Password changed successfully</h1>
+              <p style="margin:0;color:#c4cfdd;font-size:16px;line-height:1.6;">Hi ${escapeHtml(user.name)}, your DroneOps password was changed successfully.</p>
+              <p style="margin:18px 0 0;color:#c4cfdd;font-size:14px;line-height:1.6;">If you did not make this change, contact your organization administrator immediately.</p>
+            </td></tr>
+          </table>
+        </body>
+      </html>
+    `
+  });
+};
+
 export const sendEmailChangeVerificationEmail = async ({ user, pendingEmail, emailChangeToken }) => {
   const changeUrl = `${env.apiPublicUrl}/auth/verify-email-change/${emailChangeToken}`;
   const safeName = escapeHtml(user.name);

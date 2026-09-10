@@ -3,7 +3,7 @@ import { OAuth2Client } from "google-auth-library";
 import { env } from "../config/env.js";
 import { prisma } from "../config/prisma.js";
 import { AppError } from "../utils/AppError.js";
-import { sendPasswordResetEmail, sendVerificationEmail } from "./email.service.js";
+import { sendPasswordChangedEmail, sendPasswordResetEmail, sendVerificationEmail } from "./email.service.js";
 import { storeUploadedFile } from "./fileStorage.service.js";
 import { writeAudit } from "./audit.service.js";
 import { comparePassword, hashPassword } from "../utils/passwords.js";
@@ -433,6 +433,15 @@ export const resetPassword = async ({ token, password }) => {
       refreshTokenHash: null
     }
   });
+
+  try {
+    const emailStatus = await sendPasswordChangedEmail({ user });
+    if (!emailStatus.sent) {
+      console.warn(`[mail] Password changed email was not sent to ${user.email}`);
+    }
+  } catch (error) {
+    console.warn(`[mail] Password changed email failed for ${user.email}: ${error.message}`);
+  }
 
   await writeAudit({
     organisationId: user.organisationId,
