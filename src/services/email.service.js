@@ -10,13 +10,13 @@ const getSender = () => {
   return { name: match[1].trim(), email: match[2].trim() };
 };
 
-const getTransporter = () => {
+const getTransporter = (port = env.brevoSmtpPort) => {
   if (!isSmtpConfigured()) return null;
 
   return nodemailer.createTransport({
     host: env.brevoSmtpHost,
-    port: env.brevoSmtpPort,
-    secure: env.brevoSmtpPort === 465,
+    port,
+    secure: port === 465,
     connectionTimeout: 10000,
     greetingTimeout: 10000,
     socketTimeout: 15000,
@@ -67,13 +67,20 @@ const sendMail = async ({ to, subject, text, html }) => {
     return { sent: false, skipped: true, reason: "SMTP is not configured" };
   }
 
-  const info = await transporter.sendMail({
-    from: env.mailFrom,
-    to,
-    subject,
-    text,
-    html
-  });
+  const message = { from: env.mailFrom, to, subject, text, html };
+  let info;
+
+  try {
+    info = await transporter.sendMail(message);
+  } catch (error) {
+    if (env.brevoSmtpPort === 2525) throw error;
+
+    const alternateTransporter = getTransporter(2525);
+    if (!alternateTransporter) throw error;
+
+    console.warn(`[mail] SMTP port ${env.brevoSmtpPort} failed, retrying Brevo on port 2525`);
+    info = await alternateTransporter.sendMail(message);
+  }
 
   return {
     sent: true,
