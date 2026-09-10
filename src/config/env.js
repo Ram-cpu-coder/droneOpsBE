@@ -33,7 +33,9 @@ export const env = {
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean),
-  clientPublicUrl: process.env.CLIENT_PUBLIC_URL ?? "http://127.0.0.1:5173",
+  clientPublicUrl: process.env.CLIENT_PUBLIC_URL ?? (nodeEnv === "production"
+    ? "https://droneops-five.vercel.app"
+    : "http://127.0.0.1:5173"),
   databaseUrl: process.env.DATABASE_URL,
   databaseSslRejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED
     ? process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== "false"

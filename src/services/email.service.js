@@ -10,6 +10,9 @@ const getTransporter = () => {
     host: env.brevoSmtpHost,
     port: env.brevoSmtpPort,
     secure: env.brevoSmtpPort === 465,
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
     auth: {
       user: env.brevoSmtpUser,
       pass: env.brevoSmtpPass
