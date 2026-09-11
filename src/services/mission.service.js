@@ -255,7 +255,7 @@ export const analyseMissionRoute = async (organisationId, plannedRoute) => {
 
 const assertAuthorityAnalysisReady = (authorityPlan) => {
   const authorityAnalysis = authorityPlan?.geofenceConfig?.authorityAnalysis;
-  if (!authorityAnalysis || authorityAnalysis.status === "READY") return;
+  if (!authorityAnalysis || ["READY", "DISABLED"].includes(authorityAnalysis.status)) return;
 
   throw new AppError(authorityAnalysis.message, 409, "COUNCIL_BOUNDARY_ANALYSIS_REQUIRED");
 };
