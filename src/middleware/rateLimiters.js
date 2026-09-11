@@ -59,3 +59,15 @@ export const telemetryReadRateLimiter = rateLimit({
     code: "TELEMETRY_RATE_LIMIT"
   }
 });
+
+export const aiRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 12,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many AI assistant requests. Please wait a moment and try again.",
+    code: "AI_RATE_LIMIT"
+  }
+});

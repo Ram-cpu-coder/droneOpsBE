@@ -6,6 +6,8 @@ import { ensureDroneAssignable, syncMissionDroneStatuses } from "./drone.service
 import { sendMissionApprovalRequestEmail, sendMissionApprovedEmail } from "./email.service.js";
 import { nextDisplayCode } from "./displaySequence.service.js";
 
+const TELEMETRY_START_STALE_MS = 5 * 60 * 1000;
+
 const missionRecordInclude = {
   drone: {
     select: {
@@ -674,6 +676,12 @@ export const ensureMissionCanStart = async (organisationId, id) => {
   if (connectorDroneMissingId) {
     throw new AppError("Drone external device ID is required for live telemetry connector", 409, "DRONE_CONNECTOR_ID_REQUIRED");
   }
+  const telemetryBlockedDrone = mission.droneAssignments
+    .map((assignment) => assignment.drone)
+    .find((drone) => getDroneStartTelemetryBlockReason(drone));
+  if (telemetryBlockedDrone) {
+    throw new AppError(`Drone ${telemetryBlockedDrone.droneCode} needs a current telemetry link before mission start: ${getDroneStartTelemetryBlockReason(telemetryBlockedDrone)}`, 409, "DRONE_TELEMETRY_UNAVAILABLE");
+  }
 
   return { mission, droneIds, pilotIds };
 };
@@ -873,6 +881,19 @@ const validateMissionSchedule = (mission) => {
   if (plannedStartAt && plannedEndAt && plannedEndAt < plannedStartAt) {
     throw new AppError("Mission end time cannot be before start time", 400, "INVALID_MISSION_SCHEDULE");
   }
+};
+
+const getDroneStartTelemetryBlockReason = (drone) => {
+  if (!drone?.telemetryProvider || ["NONE", "GENERIC_REST"].includes(drone.telemetryProvider)) return "";
+  if (drone.connectorStatus === "OFFLINE") return "connector is offline";
+  if (drone.connectorStatus !== "ONLINE") return "connector is not online";
+  if (!drone.lastTelemetryAt) return "no telemetry has been received";
+
+  const lastTelemetryAt = new Date(drone.lastTelemetryAt);
+  if (Number.isNaN(lastTelemetryAt.getTime())) return "last telemetry timestamp is invalid";
+  if (Date.now() - lastTelemetryAt.getTime() > TELEMETRY_START_STALE_MS) return "last telemetry is stale";
+
+  return "";
 };
 
 const blockingMissionStatuses = ["APPROVED", "RISK_ASSESSMENT_COMPLETED", "ACTIVE"];

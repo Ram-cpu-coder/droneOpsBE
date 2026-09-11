@@ -12,6 +12,8 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
     "seed": "node prisma/seed.js",
+    "seed:missions": "node prisma/seedMissions.js",
+    "test:ai": "node src/services/ai/ai.service.test.js",
     "lint": "node --check src/server.js"
   },
   "dependencies": {

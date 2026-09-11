@@ -9,6 +9,10 @@ dotenv.config();
 });
 
 const requiredInProduction = ["DATABASE_URL", "JWT_ACCESS_SECRET", "JWT_REFRESH_SECRET"];
+const optionalEnv = (key) => {
+  const value = process.env[key]?.trim();
+  return value || undefined;
+};
 const explicitNodeEnv = process.env.NODE_ENV?.trim();
 const hostedRuntime = Boolean(process.env.RENDER || process.env.K_SERVICE || process.env.FLY_APP_NAME || process.env.RAILWAY_ENVIRONMENT);
 const nodeEnv = explicitNodeEnv || (hostedRuntime ? "production" : "development");
@@ -97,5 +101,10 @@ export const env = {
   governmentAirspaceUrl: process.env.GOVERNMENT_AIRSPACE_URL,
   governmentAirspaceApiKey: process.env.GOVERNMENT_AIRSPACE_API_KEY,
   governmentAirspaceCacheMinutes: Number(process.env.GOVERNMENT_AIRSPACE_CACHE_MINUTES ?? 15),
+  aiProvider: optionalEnv("AI_PROVIDER") ?? "groq",
+  aiApiKey: optionalEnv("AI_API_KEY"),
+  aiModel: optionalEnv("AI_MODEL") ?? "openai/gpt-oss-20b",
+  aiBaseUrl: optionalEnv("AI_BASE_URL"),
+  aiTimeoutMs: Number(optionalEnv("AI_TIMEOUT_MS") ?? 20000),
   prismaQueryLogEnabled: process.env.PRISMA_QUERY_LOG === "true"
 };
