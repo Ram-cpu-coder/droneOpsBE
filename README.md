@@ -162,6 +162,8 @@ For production deployment:
 npm run prisma:deploy
 ```
 
+The `prisma/migrations` folder contains the full schema evolution history. For a fresh deployment, run `npm run prisma:deploy` to apply all migrations in order.
+
 ## Running Locally
 
 ```bash
